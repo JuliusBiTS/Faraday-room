@@ -761,6 +761,26 @@ function initMapSync(dbUrl) {
   mapSync.db.ref('campaign').on('value', snap => {
     mapSync.connected = true;
     mapSync.campaign = snap.exists() ? snap.val() : null;
+    // Diagnostic snapshot — logged once per actual Firebase update (not
+    // per redraw tick), so a live-session issue can be diagnosed from the
+    // console instead of guessing from screenshots. Safe to leave in:
+    // cheap (just a handful of Object.keys/typeof calls), and only fires
+    // when 'campaign' itself changes.
+    if (mapSync.campaign) {
+      const c = mapSync.campaign;
+      console.debug('CP_Phantom map sync — campaign snapshot:', {
+        characterIds: Object.keys(c.characters || {}),
+        combatOrderRaw: c.combat?.order,
+        combatOrderType: Array.isArray(c.combat?.order) ? 'array' : typeof c.combat?.order,
+        mapTokenIds: Object.keys(c.map?.tokens || {}),
+        securityObjectIds: Object.keys(c.securityObjects || {}),
+        fogEnabled: c.fogEnabled,
+        fogShapeCount: mapSyncAsArray(c.fogShapes).length,
+        mapDrawingCount: mapSyncAsArray(c.mapDrawings).length,
+        netPing: c.netPing,
+        mapPing: c.mapPing,
+      });
+    }
     const ping = mapSync.campaign?.mapPing;
     if (ping && ping.ts !== mapSync.lastPingTs) {
       const isFirst = mapSync.lastPingTs === undefined;
@@ -1006,6 +1026,23 @@ function redrawMapScreen() {
   const lenX = p => (p/100)*fw;
   const lenY = p => (p/100)*fh;
 
+  // --- GM freehand drawings ---
+  // Mirrors buildMapDrawingsHtml exactly, including its draw position:
+  // directly over the map image, UNDER security devices/tokens/fog — same
+  // stacking order CP_Phantom's own renderPlayerMapView builds
+  // (img → drawings → security → net-ping lines → tokens → fog).
+  mapSyncAsArray(campaign.mapDrawings).forEach(s => {
+    const pts = mapSyncAsArray(s.points);
+    if (pts.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(toX(pts[0].x), toY(pts[0].y));
+    for (let i=1;i<pts.length;i++) ctx.lineTo(toX(pts[i].x), toY(pts[i].y));
+    ctx.strokeStyle = s.color || '#ff2244';
+    ctx.lineWidth = Math.max(1, ((0.6)/100) * Math.min(fw,fh)); // CP_Phantom's own fixed stroke-width:0.6 in its 0-100 viewBox
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.stroke();
+  });
+
   // --- security devices (drawn under tokens, over the map — same
   // stacking order as CP_Phantom's own map container) ---
   const netPingActive = campaign.netPing?.roundsLeft > 0;
@@ -1109,7 +1146,21 @@ function redrawMapScreen() {
   const tokenIds = new Set(order);
   Object.keys(mapTokens).forEach(id => tokenIds.add(id));
   tokenIds.forEach(id => {
-    const c = characters[id]; if (!c) return;
+    const c = characters[id];
+    if (!c) {
+      // Diagnostic: a token id shows up in combat.order/map.tokens but
+      // has no matching campaign.characters entry, so CP_Phantom's own
+      // buildMapTokensHtml would ALSO skip it (`if (!c) return ''`) — if
+      // this logs for an id you expect to see on the map, the character
+      // record itself is missing/renamed on the CP_Phantom side, not a
+      // rendering bug here. Logged once per id, not every redraw tick.
+      if (!mapSync._loggedMissingChar) mapSync._loggedMissingChar = new Set();
+      if (!mapSync._loggedMissingChar.has(id)) {
+        mapSync._loggedMissingChar.add(id);
+        console.warn('CP_Phantom map sync: token id "'+id+'" has a map position but no campaign.characters entry — skipping it, same as CP_Phantom itself would.', mapTokens[id]);
+      }
+      return;
+    }
     const pos = mapTokens[id] || { x:50, y:50 };
     // A hidden token is invisible to players outright, same as
     // CP_Phantom's own player map — not dimmed, not drawn at all.
