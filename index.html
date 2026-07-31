@@ -7,6 +7,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.20.2.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
 <style>
 :root{
   --c:#2fd8e8;--amb:#d98a3d;--g:#3ecf6e;--r:#c94456;
@@ -141,6 +143,11 @@ canvas{display:block}
       <label class="fl" for="f-token">Token (nur falls Projekt ein Zertifikat hat)</label>
       <input class="fi" id="f-token" type="text" placeholder="optional" autocomplete="off" spellcheck="false"/>
       <div class="fh">Agora-Konsole → Projekt → "Generate Temp Token" (mit UID 0, für diesen Raum-Code). Leer lassen, wenn das Projekt kein Zertifikat hat.</div>
+    </div>
+    <div class="fg">
+      <label class="fl" for="f-dburl">CP_Phantom Datenbank-URL (optional)</label>
+      <input class="fi" id="f-dburl" type="text" placeholder="https://dein-projekt-default-rtdb.firebaseio.com" autocomplete="off" spellcheck="false"/>
+      <div class="fh">Spiegelt Karte, Token und Nebel des Kriegs vom GM-Tool live auf die Nordwand. Leer lassen, wenn keine Kampagne läuft — die Wand bleibt dann einfach im Standby.</div>
     </div>
     <label class="dm-row">
       <input type="checkbox" id="f-isdm"/>
@@ -590,12 +597,13 @@ function buildCeiling() {
   });
 }
 
-// North wall — reserved space for the live battlemap/token/fog sync, not
-// wired up yet. Inert placeholder only: standby glow + a static noise
-// texture (captured once, not regenerated per frame, so it can never
-// flicker) for the "screen is on but idle" read.
-// TODO: live map hookup — will mirror CP_Phantom's map/token/fog state
-// via Firebase once the room's base look is finalized. Placeholder only.
+// North wall — the wall screen mesh + its canvas texture. Idles on a
+// standby placeholder until (and unless) a CP_Phantom Database URL is
+// entered on the join screen and a live 'campaign'/'mapImage' connection
+// comes up — see the MAP SYNC section below for that half. Kept as
+// module-level state (not function-locals) specifically so the sync code
+// can redraw onto the SAME canvas/texture rather than swapping meshes.
+let mapScreenCanvas, mapScreenCtx, mapScreenTexture;
 function buildMapScreen() {
   const w = octWallDefs()[0]; // north, main wall
   const S = MAP_SCREEN_S;
@@ -606,27 +614,432 @@ function buildMapScreen() {
   edge.position.set(w.mid[0],1.8,w.mid[1]); edge.rotation.y=w.ry; scene.add(edge);
   reactorGlowMesh = edge; // reused below for a slow standby pulse alongside the reactor
 
-  // static noise, drawn once — a real live feed will replace this canvas
-  // entirely once the Firebase hookup lands
-  const nc=document.createElement('canvas'); nc.width=300; nc.height=300;
-  const nctx=nc.getContext('2d');
-  nctx.fillStyle='#0a1416'; nctx.fillRect(0,0,300,300);
-  const idata=nctx.getImageData(0,0,300,300);
+  mapScreenCanvas=document.createElement('canvas'); mapScreenCanvas.width=420; mapScreenCanvas.height=420;
+  mapScreenCtx=mapScreenCanvas.getContext('2d');
+  drawMapScreenStandby();
+  mapScreenTexture=new THREE.CanvasTexture(mapScreenCanvas);
+
+  const offset = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,w.ry,0));
+  const screen=new THREE.Mesh(new THREE.PlaneGeometry(S,S),
+    new THREE.MeshBasicMaterial({map:mapScreenTexture}));
+  screen.position.set(w.mid[0]+offset.x,1.8,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
+}
+
+// Static noise, drawn once (never regenerated per frame, so it can never
+// flicker) for the "screen is on but idle" read — shown until a live
+// CP_Phantom connection actually has something to display (see
+// redrawMapScreen). No DB URL entered, a blank one, or a failed
+// connection all land here silently; this is the only state anyone sees
+// unless they opt in with a URL.
+function drawMapScreenStandby() {
+  const c=mapScreenCanvas, ctx=mapScreenCtx, S=c.width;
+  ctx.fillStyle='#0a1416'; ctx.fillRect(0,0,S,S);
+  const idata=ctx.getImageData(0,0,S,S);
   for(let i=0;i<idata.data.length;i+=4){
     const v=6+Math.random()*14;
     idata.data[i]=v; idata.data[i+1]=v+8; idata.data[i+2]=v+10; idata.data[i+3]=255;
   }
-  nctx.putImageData(idata,0,0);
-  nctx.strokeStyle='rgba(47,216,232,0.18)'; nctx.lineWidth=1;
-  for(let i=30;i<300;i+=30){ nctx.beginPath(); nctx.moveTo(i,0); nctx.lineTo(i,300); nctx.stroke(); }
-  for(let i=30;i<300;i+=30){ nctx.beginPath(); nctx.moveTo(0,i); nctx.lineTo(300,i); nctx.stroke(); }
-  nctx.fillStyle='rgba(47,216,232,0.4)'; nctx.font='14px "Share Tech Mono",monospace'; nctx.textAlign='center';
-  nctx.fillText('STANDBY — NO SIGNAL', 150, 150);
+  ctx.putImageData(idata,0,0);
+  ctx.strokeStyle='rgba(47,216,232,0.18)'; ctx.lineWidth=1;
+  for(let i=S/14;i<S;i+=S/14){ ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,S); ctx.stroke(); }
+  for(let i=S/14;i<S;i+=S/14){ ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(S,i); ctx.stroke(); }
+  ctx.fillStyle='rgba(47,216,232,0.4)'; ctx.font=`${Math.round(S*0.047)}px "Share Tech Mono",monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('STANDBY — NO SIGNAL', S/2, S/2);
+}
 
-  const offset = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,w.ry,0));
-  const screen=new THREE.Mesh(new THREE.PlaneGeometry(S,S),
-    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(nc)}));
-  screen.position.set(w.mid[0]+offset.x,1.8,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
+// ══════════ CP_PHANTOM MAP SYNC ══════════
+// A read-only mirror of whatever the GM currently has open in CP_Phantom
+// (https://github.com/JuliusBiTS/CP_Phantom), rendered onto the north-wall
+// screen's existing canvas texture. This is a SECOND, independent Firebase
+// connection from the room's own Agora voice/video — it never touches
+// CP_Phantom itself, and there is no write path anywhere in this section.
+//
+// Every path name, data shape, and visibility rule below is pulled
+// directly from CP_Phantom's own source rather than guessed, since this
+// only works if it reads exactly what CP_Phantom writes:
+//   - db.ref('campaign')  — the entire campaign state as one node
+//     (characters, combat.order, map.tokens, securityObjects, fogShapes,
+//     fogEnabled, mapPing, mapImageAspect, mapScaleMetersWidth), synced
+//     with a single onValue listener — see CP_Phantom's startSync().
+//   - db.ref('mapImage')  — the current map's base64 data URL, kept on a
+//     SEPARATE top-level path on purpose (so large image blobs aren't
+//     re-sent on every unrelated combat update) — see CP_Phantom's own
+//     comment above its `mapImage` listener in startSync().
+//   - Token draw rules (shape-per-type, color, health ring, hidden-token
+//     gate) mirror buildMapTokensHtml(interactive) — interactive=true is
+//     the GM's own view, interactive=false is the player's.
+//   - Security-device rules mirror buildSecurityObjectsHtml(interactive)
+//     — unrevealed devices are invisible to players (dimmed, not hidden,
+//     for the GM), except during an active Ping-hack network reveal.
+//   - Fog-of-war mirrors buildFogHtml's SVG-mask logic: reveal shapes
+//     punch a hole, hide/"re-fog" shapes repaint over it, later shapes in
+//     the array win at the same spot — reproduced here with a
+//     destination-out / source-over canvas layer instead of an SVG mask,
+//     since the render target is a 3D canvas texture, not a 2D page.
+// Token portrait images and CP_Phantom's own DOM/UI are deliberately NOT
+// pulled in here — out of scope for this pass (see the room's own
+// portrait-sync TODO on buildPortraits), and a 2D-page-shaped DOM tree
+// wouldn't fit a canvas texture render target anyway. Shape + color +
+// initials is exactly the same fallback CP_Phantom itself falls back to
+// when a character has no portrait, so nothing here looks "unfinished."
+const mapSync = {
+  app: null, db: null,
+  connected: false,          // true once ANY listener has received a value — gates whether the screen ever leaves standby
+  campaign: null,            // mirrors CP_Phantom's own `state`, but only the fields this screen actually draws
+  image: null,               // decoded <img>, or null if no map is uploaded yet
+  imageUrl: null,            // the raw data URL last seen, so a re-fired listener with an unchanged image doesn't re-decode it
+  lastPingTs: undefined,     // undefined = "first sync not seen yet" — same skip-first-sync convention CP_Phantom uses for portraitReveal/mapPing/netPing, so joining mid-session doesn't replay a stale ping
+  pulse: null,               // {x,y,startTime} while a ping pulse is animating
+  redrawTimer: null,
+};
+
+// Minimal deviceType -> real-world range lookup, copied from CP_Phantom's
+// own SECURITY_DEVICE_CATALOG (§25.2/§25.7) — ONLY the rangeMeters field
+// or every device whose detectionShape is actually 'cone'/'radius' (a
+// 'point' device never draws a zone, so its range is never read). The
+// catalog's many combat-mechanical fields (firewall/sp/sdp/breakDV/etc.)
+// have no bearing on this wall-screen visual and aren't reproduced here.
+// If CP_Phantom's catalog ever adds a new cone/radius device, that
+// device's zone will simply fall back to the same visualRange-based
+// estimate every device uses before a map scale is set — a graceful
+// degradation, not a broken read.
+const MAPSYNC_DEVICE_RANGE_M = {
+  'Standard-Kamera': 30, 'Vollspektrum-Kamera': 40,
+  'Bewegungsmelder': 15, 'Audio-Sensor': 20,
+  'Gas-Falle': 3, 'Sprengladung (Claymore)': 4,
+};
+// Same category->color/icon map as CP_Phantom's SECURITY_CATEGORY_COLOR/ICON.
+const MAPSYNC_SEC_COLOR = { sensor:'#00d4ff', lock:'#ffaa00', trap:'#ff0040' };
+const MAPSYNC_SEC_ICON  = { sensor:'📷', lock:'🔒', trap:'⚠' };
+// Same token color/shape rules as CP_Phantom's buildMapTokensHtml — hex
+// values copied from its own :root palette (--blue/--green-bright/
+// --red-bright/--cyan) since this canvas has no access to that stylesheet.
+const MAPSYNC_TOK_BLUE='#2255cc', MAPSYNC_TOK_GREEN='#00ff88', MAPSYNC_TOK_RED='#ff0040', MAPSYNC_TOK_CYAN='#00d4ff';
+
+// Called once at join, only if the (optional) f-dburl field was filled
+// in. Every failure path here is silent by design — the brief is explicit
+// that a missing/bad URL must never surface an error modal or console
+// spam that blocks anything else; the wall screen just stays on its
+// standby placeholder and the rest of the room works normally.
+function initMapSync(dbUrl) {
+  if (!dbUrl) return;
+  try {
+    // A separate, NAMED Firebase app instance (not the default one) so
+    // this can never collide with anything else touching the global
+    // `firebase` namespace — same reasoning as CP_Phantom's own
+    // initFirebase(), which names its app 'tracker' for the same reason.
+    mapSync.app = firebase.initializeApp({ databaseURL: dbUrl }, 'faraday-map-sync-' + Date.now());
+    mapSync.db = firebase.database(mapSync.app);
+  } catch(e) {
+    console.warn('CP_Phantom map sync: could not init Firebase — staying on standby screen.', e);
+    mapSync.db = null;
+    return;
+  }
+
+  try { localStorage.setItem('faradayRoomDbUrl', dbUrl); } catch(e) {}
+
+  mapSync.db.ref('campaign').on('value', snap => {
+    mapSync.connected = true;
+    mapSync.campaign = snap.exists() ? snap.val() : null;
+    const ping = mapSync.campaign?.mapPing;
+    if (ping && ping.ts !== mapSync.lastPingTs) {
+      const isFirst = mapSync.lastPingTs === undefined;
+      mapSync.lastPingTs = ping.ts;
+      if (!isFirst) mapSync.pulse = { x: ping.x, y: ping.y, startTime: performance.now() };
+    } else if (mapSync.lastPingTs === undefined) {
+      mapSync.lastPingTs = null;
+    }
+  }, err => {
+    // Permission-denied / bad URL / offline all land here — logged once
+    // per Firebase, never thrown, never shown to the user.
+    console.warn('CP_Phantom map sync (campaign) failed — staying on standby screen:', err.message);
+  });
+
+  mapSync.db.ref('mapImage').on('value', snap => {
+    mapSync.connected = true;
+    const url = snap.exists() ? snap.val() : null;
+    if (url === mapSync.imageUrl) return;
+    mapSync.imageUrl = url;
+    if (!url) { mapSync.image = null; return; }
+    const img = new Image();
+    img.onload = () => { mapSync.image = img; };
+    img.onerror = () => { mapSync.image = null; };
+    img.src = url;
+  }, err => {
+    console.warn('CP_Phantom map sync (mapImage) failed — staying on standby screen:', err.message);
+  });
+
+  if (!mapSync.redrawTimer) {
+    // Fixed-rate redraw, independent of Firebase write frequency — see the
+    // brief's own throttling note: CP_Phantom's own 2D page can afford a
+    // 60fps live-drag redraw since it's DOM, but this is a GPU texture
+    // upload, and players aren't the ones dragging tokens, so matching
+    // that rate would burn bandwidth for no visible benefit.
+    mapSync.redrawTimer = setInterval(redrawMapScreen, 80); // ~12.5Hz, within the 10-15Hz target
+  }
+}
+
+function mapSyncMetersPerPercent(campaign) {
+  if (!campaign.mapScaleMetersWidth) return null;
+  const perPercentX = campaign.mapScaleMetersWidth / 100;
+  return { x: perPercentX, y: perPercentX / (campaign.mapImageAspect || 1) };
+}
+
+// Mirrors CP_Phantom's getSecurityRadiusPercent exactly: a manual
+// rangeMetersOverride wins, then the catalog's rangeMeters converted
+// through the calibrated map scale, then the visualRange-based estimate.
+function mapSyncSecurityRadiusPercent(o, campaign) {
+  const rangeMeters = o.rangeMetersOverride ?? MAPSYNC_DEVICE_RANGE_M[o.deviceType];
+  const mpp = mapSyncMetersPerPercent(campaign);
+  if (rangeMeters != null && mpp) return { rx: rangeMeters/mpp.x, ry: rangeMeters/mpp.y };
+  const fallback = (o.visualRange ?? 30) / 3;
+  return { rx: fallback, ry: fallback };
+}
+
+function mapSyncDrawTokenShape(ctx, shape, cx, cy, r, fillColor) {
+  ctx.beginPath();
+  if (shape === 'square') {
+    ctx.rect(cx-r, cy-r, r*2, r*2);
+  } else if (shape === 'octagon' || shape === 'hexagon') {
+    const n = shape === 'octagon' ? 8 : 6;
+    for (let i=0;i<n;i++){
+      const a = -Math.PI/2 + i*(Math.PI*2/n);
+      const x = cx+Math.cos(a)*r, y = cy+Math.sin(a)*r;
+      if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+  } else {
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+  }
+  ctx.fillStyle = fillColor; ctx.fill();
+}
+
+let mapSyncFogCanvas=null, mapSyncFogCtx=null;
+function mapSyncEnsureFogLayer(w,h) {
+  if (!mapSyncFogCanvas) { mapSyncFogCanvas=document.createElement('canvas'); mapSyncFogCtx=mapSyncFogCanvas.getContext('2d'); }
+  const rw=Math.max(1,Math.round(w)), rh=Math.max(1,Math.round(h));
+  if (mapSyncFogCanvas.width!==rw || mapSyncFogCanvas.height!==rh) { mapSyncFogCanvas.width=rw; mapSyncFogCanvas.height=rh; }
+  return mapSyncFogCtx;
+}
+
+// The actual redraw — runs on the fixed interval set up in initMapSync,
+// not from inside the Firebase listeners themselves.
+function redrawMapScreen() {
+  if (!mapScreenCtx) return; // scene not built yet — shouldn't happen once connected, but guards a startup race
+  if (!mapSync.connected) return; // never attempted, or nothing has come back yet — leave the standby placeholder alone
+  const ctx = mapScreenCtx, W = mapScreenCanvas.width, H = mapScreenCanvas.height;
+  const campaign = mapSync.campaign || {};
+
+  if (!mapSync.image) {
+    // Connected, but the GM hasn't uploaded a map yet — same state
+    // CP_Phantom's own player view shows ("GM hasn't uploaded a map yet").
+    ctx.fillStyle='#05070a'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='rgba(47,216,232,0.5)'; ctx.font=`${Math.round(W*0.045)}px "Share Tech Mono",monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('CONNECTED — NO MAP YET', W/2, H/2);
+    mapScreenTexture.needsUpdate = true;
+    return;
+  }
+
+  ctx.fillStyle = '#05070a'; ctx.fillRect(0,0,W,H);
+
+  // Fit the map image without distorting it. CP_Phantom's own player view
+  // never stretches the image either — its container's height:auto always
+  // matches the image's real aspect, and only the 0-100% overlay
+  // coordinate SPACE gets non-uniformly stretched to match that
+  // already-correct aspect (see getMetersPerPercent), never the pixels.
+  const aspect = campaign.mapImageAspect || (mapSync.image.naturalWidth / mapSync.image.naturalHeight) || 1;
+  let fw = W, fh = W / aspect;
+  if (fh > H) { fh = H; fw = H * aspect; }
+  const fx = (W-fw)/2, fy = (H-fh)/2;
+  ctx.drawImage(mapSync.image, fx, fy, fw, fh);
+
+  const toX = p => fx + (p/100)*fw;
+  const toY = p => fy + (p/100)*fh;
+  const lenX = p => (p/100)*fw;
+  const lenY = p => (p/100)*fh;
+
+  // --- security devices (drawn under tokens, over the map — same
+  // stacking order as CP_Phantom's own map container) ---
+  const netPingActive = campaign.netPing?.roundsLeft > 0;
+  Object.values(campaign.securityObjects || {}).forEach(o => {
+    const revealed = !!o.revealed;
+    // Same gate as buildSecurityObjectsHtml: players only ever see
+    // revealed devices (or everything, mid-Ping); the GM sees everything,
+    // dimmed if unrevealed as a reminder.
+    if (!isDM && !revealed && !netPingActive) return;
+    const dim = isDM && !revealed;
+    const color = MAPSYNC_SEC_COLOR[o.category || 'sensor'] || '#9aa4b0';
+    const icon = MAPSYNC_SEC_ICON[o.category || 'sensor'] || '●';
+    const px = toX(o.pos?.x ?? 50), py = toY(o.pos?.y ?? 50);
+    const shape = o.detectionShape || 'point';
+
+    if (shape === 'cone' || shape === 'radius') {
+      const { rx, ry } = mapSyncSecurityRadiusPercent(o, campaign);
+      const rxPx = lenX(rx), ryPx = lenY(ry);
+      if (rxPx > 0) {
+        ctx.save();
+        ctx.fillStyle = color; ctx.strokeStyle = color; ctx.lineWidth = 1;
+        if (shape === 'cone') {
+          const rot = o.rotation || 0, coneAngle = o.coneAngle ?? 70, half = coneAngle/2, steps=14;
+          ctx.beginPath(); ctx.moveTo(px,py);
+          for (let i=0;i<=steps;i++){
+            const deg = rot - half + (coneAngle*i/steps);
+            const rad = deg*Math.PI/180;
+            ctx.lineTo(px + Math.sin(rad)*rxPx, py - Math.cos(rad)*ryPx);
+          }
+          ctx.closePath();
+        } else {
+          ctx.beginPath(); ctx.ellipse(px,py,rxPx,ryPx,0,0,Math.PI*2);
+        }
+        ctx.globalAlpha = dim ? 0.12 : 0.16; ctx.fill();
+        ctx.globalAlpha = dim ? 0.35 : 0.65; ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    ctx.save();
+    ctx.globalAlpha = dim ? 0.5 : 1;
+    ctx.beginPath(); ctx.arc(px,py,9,0,Math.PI*2);
+    ctx.fillStyle='#0a0c0e'; ctx.fill();
+    ctx.lineWidth=1.5; ctx.strokeStyle=color; ctx.stroke();
+    ctx.font='11px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(icon, px, py+1);
+    ctx.restore();
+  });
+
+  // --- tokens ---
+  // A token can exist on the map without its character being in active
+  // combat at all (prepping an encounter) — same union CP_Phantom's own
+  // buildMapTokensHtml uses: "currently fighting" OR "has a saved map position".
+  const order = campaign.combat?.order || [];
+  const characters = campaign.characters || {};
+  const mapTokens = campaign.map?.tokens || {};
+  const tokenIds = new Set(order);
+  Object.keys(mapTokens).forEach(id => tokenIds.add(id));
+  tokenIds.forEach(id => {
+    const c = characters[id]; if (!c) return;
+    const pos = mapTokens[id] || { x:50, y:50 };
+    // A hidden token is invisible to players outright, same as
+    // CP_Phantom's own player map — not dimmed, not drawn at all.
+    if (!isDM && pos.hidden) return;
+
+    const color = c.isCompanion ? MAPSYNC_TOK_BLUE : (c.isAlly ? MAPSYNC_TOK_GREEN : (c.isNPC ? MAPSYNC_TOK_RED : MAPSYNC_TOK_CYAN));
+    const shape = c.isDrone ? 'hexagon' : (c.isVehicle ? 'square' : (c.isCompanion ? 'octagon' : 'circle'));
+    const hpMax = c.hp_max || 1;
+    const rawPct = Math.max(0, Math.min(1, (c.hp_current ?? hpMax) / hpMax));
+    const isDead = (c.hp_current ?? 1) <= 0;
+    // Players shouldn't read an enemy's exact HP off the ring — show it
+    // full (or gone, if actually dead) on the player-facing view, same
+    // rule buildMapTokensHtml applies.
+    const isEnemy = c.isNPC && !c.isAlly;
+    const pct = (!isDM && isEnemy) ? (isDead ? 0 : 1) : rawPct;
+
+    const px = toX(pos.x), py = toY(pos.y);
+    const r = Math.min(fw,fh) * 0.026;
+
+    ctx.save();
+    if (isDM && pos.hidden) ctx.globalAlpha = 0.55;
+    if (isDead) ctx.filter = 'grayscale(0.9) brightness(0.65)';
+
+    mapSyncDrawTokenShape(ctx, shape, px, py, r, '#161a1f');
+    // No portrait sync in this pass (see the doc comment above) — shape +
+    // color + initials is exactly CP_Phantom's own no-portrait fallback.
+    ctx.fillStyle='#dfe6e8'; ctx.font=`bold ${Math.max(9,Math.round(r*0.85))}px "Share Tech Mono",monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText((c.name||'?').slice(0,2).toUpperCase(), px, py+1);
+
+    // Health ring — a full outline at max HP, retracting clockwise from
+    // the top as HP drops. Circular regardless of the body's own shape: a
+    // faithful but simplified stand-in for CP_Phantom's own per-shape SVG
+    // dasharray ring, which needs each shape's exact traced perimeter —
+    // not worth reproducing pixel-for-pixel here for what's meant to read
+    // as "HP is dropping," not a precise per-shape outline.
+    ctx.beginPath(); ctx.arc(px,py,r+3,0,Math.PI*2);
+    ctx.strokeStyle='rgba(255,255,255,0.14)'; ctx.lineWidth=1; ctx.stroke();
+    if (pct > 0) {
+      ctx.beginPath(); ctx.arc(px,py,r+3,-Math.PI/2,-Math.PI/2+pct*Math.PI*2);
+      ctx.strokeStyle=color; ctx.lineWidth=2.5; ctx.stroke();
+    }
+
+    // GM-only reminder that a token is currently hidden from players —
+    // dashed outline, same "at a glance" cue as CP_Phantom's own GM map.
+    if (isDM && pos.hidden) {
+      ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(px,py,r+6,0,Math.PI*2);
+      ctx.strokeStyle='rgba(255,255,255,0.5)'; ctx.lineWidth=1; ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  });
+
+  // --- fog of war ---
+  // Mirrors buildFogHtml's SVG-mask semantics on an offscreen layer: start
+  // fully fogged, 'reveal' shapes erase (destination-out) a hole, 'hide'
+  // shapes repaint fog back (source-over) — processed in array order, so
+  // a later shape always wins over an earlier one at the same spot,
+  // exactly like the SVG mask's own paint order.
+  if (campaign.fogEnabled) {
+    const flctx = mapSyncEnsureFogLayer(fw, fh);
+    const fW = mapSyncFogCanvas.width, fH = mapSyncFogCanvas.height;
+    const FOG_COLOR = '#050810';
+    flctx.clearRect(0,0,fW,fH);
+    flctx.globalCompositeOperation = 'source-over';
+    flctx.fillStyle = FOG_COLOR;
+    flctx.fillRect(0,0,fW,fH);
+    const shX = p => (p/100)*fW, shY = p => (p/100)*fH;
+    flctx.lineJoin='round'; flctx.lineCap='round';
+    (campaign.fogShapes || []).forEach(s => {
+      const isHide = s.type === 'hide';
+      flctx.globalCompositeOperation = isHide ? 'source-over' : 'destination-out';
+      flctx.fillStyle = isHide ? FOG_COLOR : '#000';
+      flctx.strokeStyle = isHide ? FOG_COLOR : '#000';
+      if (s.shape === 'rect') {
+        const x = shX(Math.min(s.x1,s.x2)), y = shY(Math.min(s.y1,s.y2));
+        const w = shX(Math.abs(s.x2-s.x1)), h = shY(Math.abs(s.y2-s.y1));
+        flctx.fillRect(x,y,w,h);
+      } else {
+        const pts = s.points || [];
+        if (pts.length) {
+          flctx.beginPath();
+          flctx.moveTo(shX(pts[0].x), shY(pts[0].y));
+          for (let i=1;i<pts.length;i++) flctx.lineTo(shX(pts[i].x), shY(pts[i].y));
+          flctx.lineWidth = ((s.size||6)/100) * Math.min(fW,fH); // stroke width is a %-of-map value, same convention as CP_Phantom's own s.size
+          flctx.stroke();
+        }
+      }
+    });
+    flctx.globalCompositeOperation = 'source-over';
+
+    ctx.save();
+    // GM sees a faint tint through (can still plan against the real map
+    // underneath); players get a near-opaque cover — same GM/player split
+    // buildFogHtml's own interactive-vs-not opacity applies.
+    ctx.globalAlpha = isDM ? 0.32 : 0.94;
+    ctx.drawImage(mapSyncFogCanvas, fx, fy, fw, fh);
+    ctx.restore();
+  }
+
+  // --- GM map-ping pulse ---
+  if (mapSync.pulse) {
+    const elapsed = (performance.now() - mapSync.pulse.startTime) / 1000;
+    const DURATION = 1.2;
+    if (elapsed > DURATION) {
+      mapSync.pulse = null;
+    } else {
+      const t = elapsed / DURATION;
+      const px = toX(mapSync.pulse.x), py = toY(mapSync.pulse.y);
+      const maxR = Math.min(fw,fh) * 0.14;
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.strokeStyle = '#2fd8e8'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(px, py, maxR*t, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI*2); ctx.fillStyle='#2fd8e8'; ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  mapScreenTexture.needsUpdate = true;
 }
 
 // East wall — data-archive wall (stands in for a library): racked servers
@@ -1855,10 +2268,19 @@ async function toggleStream(){
 }
 
 // ══════════ UI EVENTS ══════════
+// Prefill the optional CP_Phantom URL from last time, same convenience
+// convention as CP_Phantom's own 'cp_db_url' localStorage key — the field
+// still starts blank for anyone who's never entered one.
+try {
+  const savedDbUrl = localStorage.getItem('faradayRoomDbUrl');
+  if (savedDbUrl) document.getElementById('f-dburl').value = savedDbUrl;
+} catch(e) {}
+
 document.getElementById('join-btn').addEventListener('click', async()=>{
   const appId=document.getElementById('f-appid').value.trim();
   const room=document.getElementById('f-room').value.trim();
   const token=document.getElementById('f-token').value.trim()||null;
+  const dbUrl=document.getElementById('f-dburl').value.trim()||null;
   isDM=document.getElementById('f-isdm').checked;
   const name=isDM?'GM':'Runner';
   const err=document.getElementById('jerr');
@@ -1871,6 +2293,10 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
   try{
     document.getElementById('join-overlay').style.display='none';
     initScene();
+    // Independent of the Agora join below — a bad/blank URL or a failed
+    // connection here must never block or fail the room join itself, so
+    // this is wrapped on its own and never awaited against initAgora.
+    try { initMapSync(dbUrl); } catch(e) { console.warn('CP_Phantom map sync failed to start — staying on standby screen.', e); }
     ensureACtx();
     await initAgora(appId,room,name,isDM,token);
     document.getElementById('hud').style.display='flex';
