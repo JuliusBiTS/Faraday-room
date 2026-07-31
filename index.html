@@ -274,7 +274,8 @@ const TABLE_TL       = 3.4;  // tactical-display footprint length — the table 
 const TABLE_TW       = 1.5;  // tactical-display footprint width
 const TABLE_R        = 1.7;  // round table radius — DM + 4 players fit evenly around it with a clear rim
 const SEAT_COUNT     = 5;    // GM + 4 runners, spaced 72° apart — a round table means nobody sits meaningfully farther from anyone else
-const MAP_SCREEN_S   = 2.2;  // north-wall battlemap placeholder panel, square-ish per the brief
+const MAP_SCREEN_W   = 3.4;  // north-wall map screen width — sized generously since it's the room's focal point and the live CP_Phantom feed needs room for legible tokens/portraits
+const MAP_SCREEN_H   = 2.0;  // screen height — wider than tall, matching the aspect most battle maps actually come in, rather than the old square placeholder
 const SECRET_CORR_W  = 1.25; // hidden-passage corridor width
 const SECRET_CORR_L  = 4.8;  // corridor length — kept long so spatial audio (inverse falloff, not a hard cutoff) has enough real distance to fade voices out before the hard isolation gate even kicks in
 const SECRET_ROOM_W  = 2.5;  // hidden side room width
@@ -606,21 +607,27 @@ function buildCeiling() {
 let mapScreenCanvas, mapScreenCtx, mapScreenTexture;
 function buildMapScreen() {
   const w = octWallDefs()[0]; // north, main wall
-  const S = MAP_SCREEN_S;
+  const W = MAP_SCREEN_W, H = MAP_SCREEN_H;
 
-  const bezel=new THREE.Mesh(new THREE.BoxGeometry(S+0.18,S+0.18,0.08),mat(GLASS,0,0,0.5,0.3));
+  const bezel=new THREE.Mesh(new THREE.BoxGeometry(W+0.18,H+0.18,0.08),mat(GLASS,0,0,0.5,0.3));
   bezel.position.set(w.mid[0],1.8,w.mid[1]); bezel.rotation.y=w.ry; scene.add(bezel);
-  const edge=new THREE.Mesh(new THREE.BoxGeometry(S+0.24,S+0.24,0.03),mat(CYAN,CYAN,1.3));
+  const edge=new THREE.Mesh(new THREE.BoxGeometry(W+0.24,H+0.24,0.03),mat(CYAN,CYAN,1.3));
   edge.position.set(w.mid[0],1.8,w.mid[1]); edge.rotation.y=w.ry; scene.add(edge);
   reactorGlowMesh = edge; // reused below for a slow standby pulse alongside the reactor
 
-  mapScreenCanvas=document.createElement('canvas'); mapScreenCanvas.width=420; mapScreenCanvas.height=420;
+  // High-res canvas — this is a live map feed with legible tokens/
+  // portraits/text on it, not an icon-sized decoration, so it gets a much
+  // bigger texture budget than the room's other cheap canvas details. A
+  // single 1600px-wide texture redrawn at ~12.5Hz is still well within a
+  // GPU's normal texture-upload bandwidth.
+  mapScreenCanvas=document.createElement('canvas');
+  mapScreenCanvas.width=1600; mapScreenCanvas.height=Math.round(1600*(H/W));
   mapScreenCtx=mapScreenCanvas.getContext('2d');
   drawMapScreenStandby();
   mapScreenTexture=new THREE.CanvasTexture(mapScreenCanvas);
 
   const offset = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,w.ry,0));
-  const screen=new THREE.Mesh(new THREE.PlaneGeometry(S,S),
+  const screen=new THREE.Mesh(new THREE.PlaneGeometry(W,H),
     new THREE.MeshBasicMaterial({map:mapScreenTexture}));
   screen.position.set(w.mid[0]+offset.x,1.8,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
 }
@@ -632,19 +639,20 @@ function buildMapScreen() {
 // connection all land here silently; this is the only state anyone sees
 // unless they opt in with a URL.
 function drawMapScreenStandby() {
-  const c=mapScreenCanvas, ctx=mapScreenCtx, S=c.width;
-  ctx.fillStyle='#0a1416'; ctx.fillRect(0,0,S,S);
-  const idata=ctx.getImageData(0,0,S,S);
+  const c=mapScreenCanvas, ctx=mapScreenCtx, W=c.width, H=c.height;
+  ctx.fillStyle='#0a1416'; ctx.fillRect(0,0,W,H);
+  const idata=ctx.getImageData(0,0,W,H);
   for(let i=0;i<idata.data.length;i+=4){
     const v=6+Math.random()*14;
     idata.data[i]=v; idata.data[i+1]=v+8; idata.data[i+2]=v+10; idata.data[i+3]=255;
   }
   ctx.putImageData(idata,0,0);
   ctx.strokeStyle='rgba(47,216,232,0.18)'; ctx.lineWidth=1;
-  for(let i=S/14;i<S;i+=S/14){ ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,S); ctx.stroke(); }
-  for(let i=S/14;i<S;i+=S/14){ ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(S,i); ctx.stroke(); }
-  ctx.fillStyle='rgba(47,216,232,0.4)'; ctx.font=`${Math.round(S*0.047)}px "Share Tech Mono",monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('STANDBY — NO SIGNAL', S/2, S/2);
+  const step=Math.min(W,H)/14;
+  for(let i=step;i<W;i+=step){ ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,H); ctx.stroke(); }
+  for(let i=step;i<H;i+=step){ ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(W,i); ctx.stroke(); }
+  ctx.fillStyle='rgba(47,216,232,0.4)'; ctx.font=`${Math.round(Math.min(W,H)*0.06)}px "Share Tech Mono",monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('STANDBY — NO SIGNAL', W/2, H/2);
 }
 
 // ══════════ CP_PHANTOM MAP SYNC ══════════
@@ -676,12 +684,20 @@ function drawMapScreenStandby() {
 //     the array win at the same spot — reproduced here with a
 //     destination-out / source-over canvas layer instead of an SVG mask,
 //     since the render target is a 3D canvas texture, not a 2D page.
-// Token portrait images and CP_Phantom's own DOM/UI are deliberately NOT
-// pulled in here — out of scope for this pass (see the room's own
-// portrait-sync TODO on buildPortraits), and a 2D-page-shaped DOM tree
-// wouldn't fit a canvas texture render target anyway. Shape + color +
-// initials is exactly the same fallback CP_Phantom itself falls back to
-// when a character has no portrait, so nothing here looks "unfinished."
+// Map-token portraits ARE pulled in (see mapSyncEnsurePortraitListener
+// below) — this reads the same 'portraits/{id}' path and {crop,full}-or-
+// legacy-dataURL shape as CP_Phantom's own ensurePortraitListener, using
+// only the cropped square version (`.crop`), same as CP_Phantom's own map
+// tokens use `portraits[id]`, never `portraitsFull[id]`. This is distinct
+// from — and unrelated to — the room's own four big wall ID-badge frames
+// (see buildPortraits/buildHoloFrame above), whose own portrait-auto-sync
+// TODO is still deliberately unbuilt; a tiny token face on a shared map
+// display is a much smaller, lower-stakes sync surface than the room's
+// permanent per-seat character frames. CP_Phantom's own DOM/UI is still
+// not pulled in wholesale — a 2D-page-shaped DOM tree wouldn't fit a
+// canvas texture render target anyway. Shape + color + initials remains
+// the fallback whenever a character has no portrait yet, same as
+// CP_Phantom's own no-portrait state.
 const mapSync = {
   app: null, db: null,
   connected: false,          // true once ANY listener has received a value — gates whether the screen ever leaves standby
@@ -691,6 +707,8 @@ const mapSync = {
   lastPingTs: undefined,     // undefined = "first sync not seen yet" — same skip-first-sync convention CP_Phantom uses for portraitReveal/mapPing/netPing, so joining mid-session doesn't replay a stale ping
   pulse: null,               // {x,y,startTime} while a ping pulse is animating
   redrawTimer: null,
+  portraits: {},             // { charId: <img>|null }, decoded from the SAME 'portraits/{id}' node CP_Phantom itself listens on
+  portraitListeners: new Set(), // ids we've already attached a listener for — mirrors CP_Phantom's own portraitListeners Set, so a token seen on every redraw tick doesn't re-attach a listener 12x/sec
 };
 
 // Minimal deviceType -> real-world range lookup, copied from CP_Phantom's
@@ -796,7 +814,11 @@ function mapSyncSecurityRadiusPercent(o, campaign) {
   return { rx: fallback, ry: fallback };
 }
 
-function mapSyncDrawTokenShape(ctx, shape, cx, cy, r, fillColor) {
+// Traces (but doesn't fill/stroke) the token body's shape-per-type outline
+// into the CURRENT path — shared by the plain fill (no portrait yet) and
+// the portrait-clip draw below, so both always agree on the exact same
+// outline instead of two hand-kept-in-sync copies of this geometry.
+function mapSyncTraceTokenShapePath(ctx, shape, cx, cy, r) {
   ctx.beginPath();
   if (shape === 'square') {
     ctx.rect(cx-r, cy-r, r*2, r*2);
@@ -811,7 +833,57 @@ function mapSyncDrawTokenShape(ctx, shape, cx, cy, r, fillColor) {
   } else {
     ctx.arc(cx,cy,r,0,Math.PI*2);
   }
+}
+
+function mapSyncDrawTokenShape(ctx, shape, cx, cy, r, fillColor) {
+  mapSyncTraceTokenShapePath(ctx, shape, cx, cy, r);
   ctx.fillStyle = fillColor; ctx.fill();
+}
+
+// Portrait-as-token-face — CP_Phantom's own token div fills with
+// `background-image` (CSS clip-path per shape) when a portrait exists;
+// the canvas equivalent is clip() to the same traced shape, then
+// drawImage the portrait to fully cover that shape's bounding box (a
+// plain square crop like CSS background-size:cover would need object-fit
+// math per aspect — since the cached portrait is already the CROPPED
+// SQUARE version CP_Phantom itself uses for tokens, a plain square draw
+// is already correct with no extra cropping needed here).
+function mapSyncDrawTokenPortrait(ctx, shape, cx, cy, r, img) {
+  ctx.save();
+  mapSyncTraceTokenShapePath(ctx, shape, cx, cy, r);
+  ctx.clip();
+  ctx.drawImage(img, cx-r, cy-r, r*2, r*2);
+  ctx.restore();
+}
+
+// Fetches (and caches) one character's portrait from the SAME
+// 'portraits/{id}' Firebase node CP_Phantom's own ensurePortraitListener
+// listens on — attached lazily, the first time a token for that id is
+// actually drawn, and never re-attached afterward (mirrors CP_Phantom's
+// own portraitListeners Set guard).
+function mapSyncEnsurePortraitListener(id) {
+  if (!mapSync.db || mapSync.portraitListeners.has(id)) return;
+  mapSync.portraitListeners.add(id);
+  mapSync.db.ref('portraits/' + id).on('value', snap => {
+    const val = snap.exists() ? snap.val() : null;
+    if (!val) { mapSync.portraits[id] = null; return; }
+    // Same format-detection rule as CP_Phantom's ensurePortraitListener: a
+    // JSON-encoded {crop,full} string for the new format (always starts
+    // with "{"), otherwise a raw base64 dataURL (legacy/crop-only,
+    // starts with "data:") — never a raw object over the wire. Only
+    // `.crop` is used here, same as CP_Phantom's own map tokens.
+    let cropUrl = val;
+    if (typeof val === 'string' && val.startsWith('{')) {
+      try { cropUrl = JSON.parse(val).crop ?? null; } catch(e) { cropUrl = null; }
+    }
+    if (!cropUrl) { mapSync.portraits[id] = null; return; }
+    const img = new Image();
+    img.onload = () => { mapSync.portraits[id] = img; };
+    img.onerror = () => { mapSync.portraits[id] = null; };
+    img.src = cropUrl;
+  }, err => {
+    console.warn('CP_Phantom map sync (portrait for '+id+') failed — falling back to initials:', err.message);
+  });
 }
 
 let mapSyncFogCanvas=null, mapSyncFogCtx=null;
@@ -820,6 +892,27 @@ function mapSyncEnsureFogLayer(w,h) {
   const rw=Math.max(1,Math.round(w)), rh=Math.max(1,Math.round(h));
   if (mapSyncFogCanvas.width!==rw || mapSyncFogCanvas.height!==rh) { mapSyncFogCanvas.width=rw; mapSyncFogCanvas.height=rh; }
   return mapSyncFogCtx;
+}
+
+// A small tileable noise texture for the fog layer, generated ONCE and
+// cached (never regenerated per frame — a re-rolled noise pattern every
+// redraw would read as flickering static, which the room's whole comfort
+// brief explicitly rules out). Bluish tint mirrors the color CP_Phantom's
+// own feColorMatrix tints its turbulence-noise fog layer with.
+let mapSyncFogNoiseTile = null;
+function mapSyncFogNoisePattern(ctx) {
+  if (!mapSyncFogNoiseTile) {
+    const tile=document.createElement('canvas'); tile.width=128; tile.height=128;
+    const tctx=tile.getContext('2d');
+    const idata=tctx.createImageData(128,128);
+    for (let i=0;i<idata.data.length;i+=4){
+      const v=Math.random()*255;
+      idata.data[i]=v*0.1; idata.data[i+1]=v*0.35; idata.data[i+2]=v*0.45; idata.data[i+3]=v*0.5;
+    }
+    tctx.putImageData(idata,0,0);
+    mapSyncFogNoiseTile = tile;
+  }
+  return ctx.createPattern(mapSyncFogNoiseTile, 'repeat');
 }
 
 // The actual redraw — runs on the fixed interval set up in initMapSync,
@@ -834,7 +927,7 @@ function redrawMapScreen() {
     // Connected, but the GM hasn't uploaded a map yet — same state
     // CP_Phantom's own player view shows ("GM hasn't uploaded a map yet").
     ctx.fillStyle='#05070a'; ctx.fillRect(0,0,W,H);
-    ctx.fillStyle='rgba(47,216,232,0.5)'; ctx.font=`${Math.round(W*0.045)}px "Share Tech Mono",monospace`;
+    ctx.fillStyle='rgba(47,216,232,0.5)'; ctx.font=`${Math.round(Math.min(W,H)*0.06)}px "Share Tech Mono",monospace`;
     ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('CONNECTED — NO MAP YET', W/2, H/2);
     mapScreenTexture.needsUpdate = true;
@@ -942,12 +1035,18 @@ function redrawMapScreen() {
     if (isDM && pos.hidden) ctx.globalAlpha = 0.55;
     if (isDead) ctx.filter = 'grayscale(0.9) brightness(0.65)';
 
-    mapSyncDrawTokenShape(ctx, shape, px, py, r, '#161a1f');
-    // No portrait sync in this pass (see the doc comment above) — shape +
-    // color + initials is exactly CP_Phantom's own no-portrait fallback.
-    ctx.fillStyle='#dfe6e8'; ctx.font=`bold ${Math.max(9,Math.round(r*0.85))}px "Share Tech Mono",monospace`;
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText((c.name||'?').slice(0,2).toUpperCase(), px, py+1);
+    mapSyncEnsurePortraitListener(id);
+    const portrait = mapSync.portraits[id];
+    if (portrait) {
+      mapSyncDrawTokenPortrait(ctx, shape, px, py, r, portrait);
+    } else {
+      // No portrait loaded (yet, or the character has none) — shape +
+      // color + initials, exactly CP_Phantom's own no-portrait fallback.
+      mapSyncDrawTokenShape(ctx, shape, px, py, r, '#161a1f');
+      ctx.fillStyle='#dfe6e8'; ctx.font=`bold ${Math.max(9,Math.round(r*0.85))}px "Share Tech Mono",monospace`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText((c.name||'?').slice(0,2).toUpperCase(), px, py+1);
+    }
 
     // Health ring — a full outline at max HP, retracting clockwise from
     // the top as HP drops. Circular regardless of the body's own shape: a
@@ -985,10 +1084,15 @@ function redrawMapScreen() {
     const FOG_COLOR = '#050810';
     flctx.clearRect(0,0,fW,fH);
     flctx.globalCompositeOperation = 'source-over';
+    flctx.filter = 'none';
     flctx.fillStyle = FOG_COLOR;
     flctx.fillRect(0,0,fW,fH);
     const shX = p => (p/100)*fW, shY = p => (p/100)*fH;
     flctx.lineJoin='round'; flctx.lineCap='round';
+    // Soft edges on every reveal/hide shape — canvas equivalent of
+    // CP_Phantom's own feGaussianBlur on its fog-shapes group, so a
+    // reveal hole reads as mist clearing, not a hard vector cutout.
+    flctx.filter = `blur(${Math.max(2, Math.round(Math.min(fW,fH)*0.01))}px)`;
     (campaign.fogShapes || []).forEach(s => {
       const isHide = s.type === 'hide';
       flctx.globalCompositeOperation = isHide ? 'source-over' : 'destination-out';
@@ -1009,12 +1113,32 @@ function redrawMapScreen() {
         }
       }
     });
+    flctx.filter = 'none';
+    flctx.globalCompositeOperation = 'source-over';
+
+    // A faint, STATIC noise texture (generated once, cached, never
+    // regenerated per frame — see mapSyncFogNoisePattern — so it can
+    // never flicker) painted only where fog is actually still present:
+    // 'source-atop' only draws onto pixels the destination already has
+    // opacity at, so this never bleeds into a punched-out reveal hole.
+    // Same intent as CP_Phantom's own turbulence-noise fog layer — gives
+    // an unrevealed area some depth/character instead of reading as a
+    // flat, glitchy-looking black rectangle.
+    flctx.globalCompositeOperation = 'source-atop';
+    flctx.globalAlpha = 0.55;
+    flctx.fillStyle = mapSyncFogNoisePattern(flctx);
+    flctx.fillRect(0,0,fW,fH);
+    flctx.globalAlpha = 1;
     flctx.globalCompositeOperation = 'source-over';
 
     ctx.save();
     // GM sees a faint tint through (can still plan against the real map
-    // underneath); players get a near-opaque cover — same GM/player split
-    // buildFogHtml's own interactive-vs-not opacity applies.
+    // underneath, and revealed devices/tokens stay visible regardless of
+    // terrain fog — CP_Phantom treats fog and reveal state as
+    // independent systems, and this keeps that exact behavior rather
+    // than inventing a stricter rule); players get a near-opaque cover —
+    // same GM/player split buildFogHtml's own interactive-vs-not opacity
+    // applies.
     ctx.globalAlpha = isDM ? 0.32 : 0.94;
     ctx.drawImage(mapSyncFogCanvas, fx, fy, fw, fh);
     ctx.restore();
