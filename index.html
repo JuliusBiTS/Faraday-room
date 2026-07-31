@@ -978,7 +978,7 @@ function redrawMapScreen() {
   // friction than expected, so this puts the same numbers directly on
   // the wall screen itself instead. Populated inside the tokens section
   // below; drawn last, unclipped, so it's visible no matter what.
-  const debugInfo = { totalTokenIds: 0, drawnTokens: 0, missingChar: [], hiddenSkipped: 0 };
+  const debugInfo = { totalTokenIds: 0, drawnTokens: 0, missingChar: [], hiddenSkipped: 0, tokenList: [] };
 
   if (!mapSync.image) {
     // Connected, but the GM hasn't uploaded a map yet — same state
@@ -1174,6 +1174,7 @@ function redrawMapScreen() {
     // CP_Phantom's own player map — not dimmed, not drawn at all.
     if (!isDM && pos.hidden) { debugInfo.hiddenSkipped++; return; }
     debugInfo.drawnTokens++;
+    debugInfo.tokenList.push(`${(c.name||id).slice(0,10)}@${Math.round(pos.x)},${Math.round(pos.y)}${c.isNPC?'[NPC]':c.isAlly?'[ALLY]':c.isCompanion?'[COMP]':''}`);
 
     const color = c.isCompanion ? MAPSYNC_TOK_BLUE : (c.isAlly ? MAPSYNC_TOK_GREEN : (c.isNPC ? MAPSYNC_TOK_RED : MAPSYNC_TOK_CYAN));
     const shape = c.isDrone ? 'hexagon' : (c.isVehicle ? 'square' : (c.isCompanion ? 'octagon' : 'circle'));
@@ -1368,6 +1369,12 @@ function redrawMapScreen() {
     const lines = [
       `SYNC DEBUG — isDM:${isDM}  chars:${chars}  tokenIds:${debugInfo.totalTokenIds}  drawn:${debugInfo.drawnTokens}  hiddenSkipped:${debugInfo.hiddenSkipped}`,
       debugInfo.missingChar.length ? `missing char record for: ${debugInfo.missingChar.join(', ')}` : '',
+      // Exact drawn position (in the SAME 0-100 % space CP_Phantom itself
+      // stores) for every token this pass actually drew — if all 7 (say)
+      // are accounted for here with sane-looking x/y, they ARE on the
+      // canvas somewhere; if several list the same x,y, they're stacked
+      // on top of each other rather than actually missing.
+      ...debugInfo.tokenList,
     ].filter(Boolean);
     ctx.save();
     ctx.font = '13px "Share Tech Mono",monospace';
