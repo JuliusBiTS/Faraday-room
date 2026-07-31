@@ -268,6 +268,10 @@ const TABLE_TW       = 1.5;  // tactical-display footprint width
 const TABLE_R        = 1.7;  // round table radius — DM + 4 players fit evenly around it with a clear rim
 const SEAT_COUNT     = 5;    // GM + 4 runners, spaced 72° apart — a round table means nobody sits meaningfully farther from anyone else
 const MAP_SCREEN_S   = 2.2;  // north-wall battlemap placeholder panel, square-ish per the brief
+const SECRET_CORR_W  = 1.25; // hidden-passage corridor width
+const SECRET_CORR_L  = 4.8;  // corridor length — kept long so spatial audio (inverse falloff, not a hard cutoff) has enough real distance to fade voices out before the hard isolation gate even kicks in
+const SECRET_ROOM_W  = 2.5;  // hidden side room width
+const SECRET_ROOM_D  = 2.5;  // hidden side room depth
 
 // ══════════ PALETTE ══════════
 // Deliberately few bright accent sources (reactor glow, the north holo-screen,
@@ -284,6 +288,8 @@ const GUNMETAL_DK = 0x17191d; // darker wall/ceiling variant
 const STEEL    = 0x555c63; // brushed steel frames/trim
 const GLASS    = 0x0b0d10; // screen bezels, server rack carcasses
 const FLOOR    = 0x16181c; // dark industrial floor
+const NULLROOM = 0x14151f; // hidden side-room walls — a shade cooler/darker than the main gunmetal, reads as a separate, extra-shielded space
+const NULLGLOW = 0x7c8ce8; // hidden side-room accent — a soft blue-violet "isolated frequency" glow, distinct from the main room's cyan
 const TOKEN_ALLY = GREEN;
 const TOKEN_COMPANION = AMBER;
 const TOKEN_ENEMY = RED;
@@ -294,6 +300,7 @@ let renderer, scene, camera, clock;
 let particleMesh, vaporMesh;
 let ambientLight, ceilingLightA, ceilingLightB, reactorLight;
 let reactorGlowMesh;
+let doorWallInfo; // east-wall doorway to the hidden side room — used for the movement passage and the audio-isolation boundary
 let tacticalView = false; // fixed bird's-eye camera over the table, for precise token placement
 
 // ══════════ TACTICAL DISPLAY (table) ══════════
@@ -345,7 +352,6 @@ const users = {};
 let audioCtx = null;
 let musicGain = null, musicUid = null; // ambient music's own isolation gain node
 let spatialMode = true; // per-listener preference: true = positional 3D audio, false = flat, same volume for everyone
-let humNodes = null; // synthesized room-tone hum (see startAmbientHum)
 
 // ══════════ POINTER LOCK ══════════
 const canvas = document.getElementById('c');
@@ -435,6 +441,7 @@ function initScene() {
   ceilingLightA = new THREE.PointLight(0xcfe8ec, 0.55, 8); ceilingLightA.position.set(1.4,WALL_H+CEIL_CLEAR-0.1,-1.0); scene.add(ceilingLightA);
   ceilingLightB = new THREE.PointLight(0xcfe8ec, 0.5, 8);  ceilingLightB.position.set(-1.4,WALL_H+CEIL_CLEAR-0.1,1.2); scene.add(ceilingLightB);
 
+  doorWallInfo = octWallDefs()[2]; // east wall — doubles as the hidden passage behind the archive
   buildRoom();
   buildFurniture();
   buildParticles();
@@ -519,11 +526,13 @@ function buildRoom() {
   const g1=new THREE.GridHelper(OCT_HW*2,16,0x232830,0x1a1e24); g1.position.y=-0.01; scene.add(g1);
 
   // walls — gunmetal panelling in two bands with a dim seam, cyan baseboard
-  // trim. Skip the south wall (index 4) entirely — buildBlastDoor() builds
-  // its own slab there. Leaving a full panel in place would sit right behind
-  // the door and never be seen, but would still cost a draw call.
+  // trim. Skip the south wall (index 4, blast door) and the east wall
+  // (index 2, hidden passage) entirely — buildBlastDoor() and
+  // buildArchiveWall()/buildSecretWing() build their own geometry there.
+  // Leaving a full panel in place would sit right behind them and never be
+  // seen, but would still cost a draw call.
   octWallDefs().forEach(w=>{
-    if(w.index===4) return;
+    if(w.index===4 || w.index===2) return;
     const nx=Math.sin(w.ry), nz=Math.cos(w.ry);
     const lower=new THREE.Mesh(new THREE.PlaneGeometry(w.width-0.05, WALL_H/3), mat(GUNMETAL,0,0,0.75,0.2));
     lower.position.set(w.mid[0],WALL_H/6,w.mid[1]); lower.rotation.y=w.ry; lower.receiveShadow=true; scene.add(lower);
@@ -545,6 +554,7 @@ function buildRoom() {
   buildCeiling();
   buildMapScreen();
   buildArchiveWall();
+  buildSecretWing();
   buildReactor(-OCT_HW+0.03, 0, Math.PI/2);
   buildBlastDoor();
   buildPortraits();
@@ -620,13 +630,40 @@ function buildMapScreen() {
 }
 
 // East wall — data-archive wall (stands in for a library): racked servers
-// plus redacted-dossier holo-panels and a fixer job board, all cheap
-// canvas-texture detail rather than real geometry or shaders.
+// plus one clean, properly-proportioned dossier/job terminal. The wall has
+// a gap carved into it for the hidden passage (see buildSecretWing below),
+// so this only dresses the two jambs flanking that gap — a full-width
+// panel here would either overlap the passage or leave it looking like a
+// hole punched in a random wall instead of a concealed opening.
 function buildArchiveWall() {
-  const x = OCT_HW-0.05;
-  buildServerRack(x,-0.9,-Math.PI/2,1.5);
-  buildDossierPanel(x,0.15,-Math.PI/2);
-  buildJobBoard(x,0.95,-Math.PI/2);
+  const w = doorWallInfo; // east, main wall
+  const nx=Math.sin(w.ry), nz=Math.cos(w.ry);
+  const tangent=[Math.cos(w.ry), -Math.sin(w.ry)];
+  const jambW=(w.width-SECRET_CORR_W)/2;
+
+  // standard wall panelling on both jambs, matching the rest of the room —
+  // built manually here since these two spans are excluded from the generic
+  // wall loop in buildRoom() (that loop treats the whole east wall as one
+  // skip, not aware of the gap in the middle).
+  [-1,1].forEach(side=>{
+    const off=(SECRET_CORR_W/2+jambW/2)*side;
+    const jx=w.mid[0]+tangent[0]*off, jz=w.mid[1]+tangent[1]*off;
+    const lower=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.05, WALL_H/3), mat(GUNMETAL,0,0,0.75,0.2));
+    lower.position.set(jx,WALL_H/6,jz); lower.rotation.y=w.ry; scene.add(lower);
+    const upper=new THREE.Mesh(new THREE.PlaneGeometry(jambW-0.05, WALL_H*2/3), mat(GUNMETAL_DK,0x000000,0,0.8,0.15));
+    upper.position.set(jx,WALL_H*2/3,jz); upper.rotation.y=w.ry; scene.add(upper);
+    const base=new THREE.Mesh(new THREE.BoxGeometry(jambW-0.03,0.06,0.03),mat(CYAN,CYAN,1.2,0.4,0.3));
+    base.position.set(jx+nx*0.02,0.04,jz+nz*0.02); base.rotation.y=w.ry; scene.add(base);
+  });
+
+  // one jamb gets the server rack (pure background detail, no legible
+  // text needed), the other gets the single combined terminal panel —
+  // two well-spaced elements instead of the old three cramped ones.
+  const off = SECRET_CORR_W/2+jambW/2;
+  const rackPos = [w.mid[0]-tangent[0]*off, w.mid[1]-tangent[1]*off];
+  const termPos = [w.mid[0]+tangent[0]*off, w.mid[1]+tangent[1]*off];
+  buildServerRack(rackPos[0], rackPos[1], w.ry, Math.min(jambW-0.15, 1.6));
+  buildArchiveTerminal(termPos[0], 1.55, termPos[1], w.ry);
 }
 
 function buildServerRack(x,z,ry,width) {
@@ -657,52 +694,217 @@ function buildServerRack(x,z,ry,width) {
   grp.position.set(x,0,z); grp.rotation.y=ry; scene.add(grp);
 }
 
-// A "classified" mission dossier rendered as a holo-panel — same
-// cheap-detail technique as the server rack's blocked-out labels.
-function buildDossierPanel(x,z,ry) {
-  addScreen(x,1.55,z,ry,0.62,0.85,(ctx,w,h)=>{
-    ctx.fillStyle='#0b1416'; ctx.fillRect(0,0,w,h);
-    ctx.strokeStyle='rgba(47,216,232,0.5)'; ctx.lineWidth=2; ctx.strokeRect(6,6,w-12,h-12);
-    ctx.fillStyle='#2fd8e8'; ctx.font='bold 15px "Share Tech Mono",monospace'; ctx.textAlign='left';
-    ctx.fillText('CLASSIFIED', 16, 30);
-    ctx.font='10px "Share Tech Mono",monospace'; ctx.fillStyle='rgba(47,216,232,0.6)';
-    ctx.fillText('EYES ONLY · FIXER CHANNEL', 16, 46);
-    ctx.fillStyle='rgba(180,190,195,0.5)';
-    let y=72;
-    for(let i=0;i<9;i++){
-      const lineW=30+Math.random()*(w-60);
-      if(Math.random()<0.4){
-        ctx.fillStyle='#0a0a0a'; ctx.fillRect(16,y,lineW,10); // redaction bar
-      } else {
-        ctx.fillStyle='rgba(180,190,195,0.4)'; ctx.fillRect(16,y,lineW,4);
-      }
-      y+=18;
+// A single combined "classified dossier + fixer board" terminal, replacing
+// the old cramped three-panel layout. Built with its own high-resolution
+// canvas (not addScreen's default, which sizes the canvas from the panel's
+// small world-space footprint — fine for icon-sized graphics, but it made
+// the old text-heavy panels render at ~90px wide and clip most of their own
+// content). All text/line positions here are laid out as fractions of the
+// canvas's own w/h, so this stays correctly proportioned regardless of the
+// physical panel size chosen below. Currency/lore terms match the
+// CP_Phantom campaign tool (Eurodollars/"ed", Netrunning, IP) so this room
+// reads as part of the same continuity.
+function buildArchiveTerminal(x,y,z,ry) {
+  const PW=0.85, PH=1.3; // panel world size, portrait-ish, comfortably readable at normal viewing distance
+
+  const c=document.createElement('canvas'); c.width=340; c.height=520;
+  const ctx=c.getContext('2d'); const w=c.width, h=c.height;
+  ctx.fillStyle='#0a0c0d'; ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle='rgba(47,216,232,0.5)'; ctx.lineWidth=3; ctx.strokeRect(8,8,w-16,h-16);
+
+  // header
+  ctx.fillStyle='#2fd8e8'; ctx.font=`bold ${h*0.036}px "Share Tech Mono",monospace`; ctx.textAlign='left';
+  ctx.fillText('CLASSIFIED', w*0.06, h*0.075);
+  ctx.font=`${h*0.02}px "Share Tech Mono",monospace`; ctx.fillStyle='rgba(47,216,232,0.6)';
+  ctx.fillText('EYES ONLY · FIXER CHANNEL', w*0.06, h*0.11);
+  ctx.strokeStyle='rgba(47,216,232,0.25)'; ctx.beginPath();
+  ctx.moveTo(w*0.06,h*0.135); ctx.lineTo(w*0.94,h*0.135); ctx.stroke();
+
+  // redacted dossier lines — never legible, just texture
+  let ly=h*0.17;
+  for(let i=0;i<7;i++){
+    const lineW=(0.2+Math.random()*0.55)*w;
+    if(Math.random()<0.4){ ctx.fillStyle='#050505'; ctx.fillRect(w*0.06,ly,lineW,h*0.022); }
+    else { ctx.fillStyle='rgba(180,190,195,0.4)'; ctx.fillRect(w*0.06,ly,lineW,h*0.009); }
+    ly+=h*0.032;
+  }
+
+  // fixer job board section
+  ctx.strokeStyle='rgba(217,138,61,0.35)'; ctx.beginPath();
+  ctx.moveTo(w*0.06,h*0.46); ctx.lineTo(w*0.94,h*0.46); ctx.stroke();
+  ctx.fillStyle='#d98a3d'; ctx.font=`bold ${h*0.03}px "Share Tech Mono",monospace`; ctx.textAlign='left';
+  ctx.fillText('FIXER BOARD', w*0.06, h*0.51);
+
+  const jobs=[
+    'DATA RUN — ed 2.500',
+    'Corpo Tower, keine Fragen',
+    '',
+    'BODYGUARD GES. — ed 800/Nacht',
+    'Netrunner von Vorteil',
+    '',
+    'RECOVERY JOB — ed 1.200',
+    'IP-Bonus bei Erfolg'
+  ];
+  ctx.font=`${h*0.021}px "Share Tech Mono",monospace`;
+  let jy=h*0.565;
+  jobs.forEach(line=>{
+    if(line){
+      ctx.fillStyle='rgba(230,220,200,0.8)';
+      ctx.fillText('• '+line, w*0.07, jy, w*0.86);
     }
+    jy+=h*0.043;
   });
+
+  const frame=new THREE.Mesh(new THREE.BoxGeometry(PW+0.14,PH+0.14,0.06),mat(GLASS,0,0,0.5,0.3));
+  frame.position.set(x,y,z); frame.rotation.y=ry; scene.add(frame);
+  const edge=new THREE.Mesh(new THREE.BoxGeometry(PW+0.2,PH+0.2,0.03),mat(CYAN,CYAN,1.2));
+  edge.position.set(x,y,z); edge.rotation.y=ry; scene.add(edge);
+
+  const offset = new THREE.Vector3(0,0,0.05).applyEuler(new THREE.Euler(0,ry,0));
+  const screen=new THREE.Mesh(new THREE.PlaneGeometry(PW,PH),
+    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(c)}));
+  screen.position.set(x+offset.x,y,z+offset.z); screen.rotation.y=ry; scene.add(screen);
 }
 
-// A corkboard-style fixer job board — flavor only, no interactivity yet.
-// Currency/lore terms match the CP_Phantom campaign tool (Eurodollars/"ed",
-// Netrunning, IP) so this room reads as part of the same continuity.
-function buildJobBoard(x,z,ry) {
-  addScreen(x,0.95,z,ry,0.62,0.62,(ctx,w,h)=>{
-    ctx.fillStyle='#241f19'; ctx.fillRect(0,0,w,h);
-    ctx.fillStyle='#d98a3d'; ctx.font='bold 14px "Share Tech Mono",monospace'; ctx.textAlign='center';
-    ctx.fillText('FIXER BOARD', w/2, 24);
-    const jobs=[
-      '• DATA RUN — ed 2.500 — Corpo Tower, keine Fragen',
-      '• BODYGUARD GES. — ed 800/Nacht — Netrunner von Vorteil',
-      '• CHROME-DOC GES. — ed VB — Cyberware-Wartung',
-      '• RECOVERY JOB — ed 1.200 — IP-Bonus bei Erfolg'
-    ];
-    ctx.textAlign='left'; ctx.font='9px "Share Tech Mono",monospace';
-    jobs.forEach((j,i)=>{
-      ctx.fillStyle='rgba(230,220,200,0.75)';
-      ctx.fillText(j, 12, 50+i*24, w-24);
-      ctx.strokeStyle='rgba(217,138,61,0.4)'; ctx.beginPath();
-      ctx.arc(w-16,44+i*24,3,0,Math.PI*2); ctx.stroke(); // pushpin
-    });
+// ══════════ HIDDEN SIDE ROOM ══════════
+// A soundproofed nook behind the archive wall, reached through the gap
+// carved into the east wall (see buildArchiveWall above) — somewhere two
+// people can duck out of the main session to talk unheard, still inside
+// the Faraday shielding but with its own extra isolation. This is the same
+// mechanic as Fantasy-room's secret wing, reskinned: violet candlelit
+// hideaway → a cold, blue-violet "dead drop" nook lit by a single terminal.
+function buildSecretWing() {
+  const doorWall = doorWallInfo; // east main wall
+  const gapW = SECRET_CORR_W, archH = 2.05;
+  const tangent=[Math.cos(doorWall.ry), -Math.sin(doorWall.ry)];
+
+  const lintel=new THREE.Mesh(new THREE.BoxGeometry(gapW+0.34,0.16,0.16),mat(STEEL,0,0,0.55,0.35));
+  lintel.position.set(doorWall.mid[0],archH,doorWall.mid[1]); lintel.rotation.y=doorWall.ry; scene.add(lintel);
+  [-1,1].forEach(side=>{
+    const px=doorWall.mid[0]+tangent[0]*(gapW/2+0.06)*side, pz=doorWall.mid[1]+tangent[1]*(gapW/2+0.06)*side;
+    const p=new THREE.Mesh(new THREE.BoxGeometry(0.15,archH,0.15),mat(STEEL,0,0,0.55,0.35));
+    p.position.set(px,archH/2,pz); p.rotation.y=doorWall.ry; scene.add(p);
   });
+
+  // a small "signal jammed" glyph above the arch, in place of the old
+  // silence-rune — same reasoning, cyberpunk dressing
+  addScreen(doorWall.mid[0], archH+0.3, doorWall.mid[1], doorWall.ry, 0.46,0.28, (ctx,w,h)=>{
+    ctx.fillStyle='#0e0f1a'; ctx.fillRect(0,0,w,h);
+    ctx.strokeStyle='rgba(124,140,232,0.8)'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(w/2,h/2,h*0.32,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(w*0.32,h*0.32); ctx.lineTo(w*0.68,h*0.68); ctx.stroke();
+  });
+
+  // everything beyond the doorway lives in a local wing: local +Z = outward, into the passage
+  const wing=new THREE.Group();
+  wing.position.set(doorWall.mid[0],0,doorWall.mid[1]);
+  wing.rotation.y=doorWall.ry+Math.PI;
+  scene.add(wing);
+
+  const OVERLAP=0.2;
+  const CORR_L=SECRET_CORR_L;
+  const spanL=CORR_L+OVERLAP, spanMid=(CORR_L-OVERLAP)/2;
+  const cf=new THREE.Mesh(new THREE.PlaneGeometry(gapW,spanL),mat(FLOOR,0,0,0.75,0.15));
+  cf.rotation.x=-Math.PI/2; cf.position.set(0,0,spanMid); wing.add(cf);
+  [-1,1].forEach(side=>{
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(spanL,WALL_H),mat(GUNMETAL,0,0,0.75,0.2));
+    w.position.set(side*gapW/2,WALL_H/2,spanMid);
+    w.rotation.y = side>0 ? -Math.PI/2 : Math.PI/2;
+    wing.add(w);
+  });
+  const cc=new THREE.Mesh(new THREE.PlaneGeometry(gapW,spanL),mat(GUNMETAL_DK,0,0,0.85));
+  cc.rotation.x=Math.PI/2; cc.position.set(0,WALL_H,spanMid); wing.add(cc);
+
+  // a slat-strip curtain across the corridor mouth — a server-room privacy
+  // trick doing double duty as a doorway, cheap to draw
+  for(let i=-2;i<=2;i++){
+    const strip=new THREE.Mesh(new THREE.PlaneGeometry(gapW/5-0.02,WALL_H*0.7),mat(0x0c0d12,0,0,0.85));
+    strip.position.set(i*(gapW/5),WALL_H*0.35,0.4); wing.add(strip);
+  }
+
+  const torch=new THREE.PointLight(NULLGLOW,0.7,5);
+  torch.position.set(0,1.65,CORR_L*0.55); wing.add(torch);
+  const torchGlow=new THREE.Mesh(new THREE.SphereGeometry(0.04,8,8),mat(NULLGLOW,NULLGLOW,1.6));
+  torchGlow.position.copy(torch.position); wing.add(torchGlow);
+
+  buildSecretRoom(wing, CORR_L, gapW);
+}
+
+function buildSecretRoom(wing, corrL, corrW) {
+  const SW=SECRET_ROOM_W, SD=SECRET_ROOM_D, SH=WALL_H, TY=0.72;
+  const cz = corrL + SD/2;
+
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(SW,SD),mat(0x101116,0,0,0.75,0.15));
+  floor.rotation.x=-Math.PI/2; floor.position.set(0,0,cz); wing.add(floor);
+  const ceil=new THREE.Mesh(new THREE.PlaneGeometry(SW,SD),mat(0x0a0a10,0,0,0.85));
+  ceil.rotation.x=Math.PI/2; ceil.position.set(0,SH,cz); wing.add(ceil);
+
+  [
+    [[0,SD/2],[0,0,0],SW],           // back wall, opposite the entrance
+    [[-SW/2,0],[0,Math.PI/2,0],SD],  // left wall
+    [[ SW/2,0],[0,-Math.PI/2,0],SD], // right wall
+  ].forEach(([[lx,lz],[rx,ry,rz],width])=>{
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(width,SH),mat(NULLROOM,0,0,0.7,0.2));
+    w.position.set(lx,SH/2,cz+lz); w.rotation.set(rx,ry,rz); wing.add(w);
+    const trim=new THREE.Mesh(new THREE.BoxGeometry(width-0.1,0.03,0.03),mat(NULLGLOW,NULLGLOW,1.4));
+    trim.position.set(lx,SH-0.15,cz+lz); trim.rotation.y=ry; wing.add(trim);
+  });
+
+  // step walls where the room (SW wide) meets the narrower corridor (corrW)
+  [-1,1].forEach(side=>{
+    const stepW = SW/2 - corrW/2;
+    const stepX = side*(corrW/2 + stepW/2);
+    const step=new THREE.Mesh(new THREE.PlaneGeometry(stepW,SH),mat(NULLROOM,0,0,0.7,0.2,THREE.DoubleSide));
+    step.position.set(stepX,SH/2,corrL); wing.add(step);
+  });
+
+  // small round counter with a slim desk terminal (the reskinned candle) and
+  // two facing stools
+  const table=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,0.06,24),mat(GLASS,0,0,0.55,0.3));
+  table.position.set(0,TY,cz); wing.add(table);
+  const tleg=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.09,TY-0.06,10),mat(GLASS,0,0,0.5,0.3));
+  tleg.position.set(0,(TY-0.06)/2,cz); wing.add(tleg);
+
+  const termC=document.createElement('canvas'); termC.width=64; termC.height=48;
+  const termCtx=termC.getContext('2d');
+  termCtx.fillStyle='#05060a'; termCtx.fillRect(0,0,64,48);
+  termCtx.strokeStyle='#7c8ce8'; termCtx.lineWidth=2;
+  termCtx.beginPath(); termCtx.moveTo(4,24);
+  for(let i=4;i<60;i+=6) termCtx.lineTo(i, 24+Math.sin(i*0.7)*10);
+  termCtx.stroke();
+  const term=new THREE.Mesh(new THREE.PlaneGeometry(0.16,0.12),
+    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(termC)}));
+  term.position.set(0,TY+0.12,cz+0.005); wing.add(term);
+  const termLight=new THREE.PointLight(NULLGLOW,1.0,4.5);
+  termLight.position.set(0,TY+0.15,cz); wing.add(termLight);
+  const fill=new THREE.PointLight(NULLGLOW,0.4,6);
+  fill.position.set(0,1.6,cz); wing.add(fill);
+
+  [-0.65,0.65].forEach(dx=>{
+    const stool=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.2,0.42,16),mat(NULLROOM,0,0,0.7,0.15));
+    stool.position.set(dx,0.21,cz); wing.add(stool);
+    const stoolTop=new THREE.Mesh(new THREE.CylinderGeometry(0.23,0.23,0.03,16),mat(STEEL,STEEL,0.4,0.4,0.3));
+    stoolTop.position.set(dx,0.42,cz); wing.add(stoolTop);
+  });
+
+  // faint "no signal" ward inlaid in the floor beneath the table
+  const rc=document.createElement('canvas'); rc.width=260; rc.height=260;
+  const rctx=rc.getContext('2d');
+  drawReticle(rctx,130,130,90,'rgba(124,140,232,0.22)');
+  const rune=new THREE.Mesh(new THREE.CircleGeometry(1.0,40),
+    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(rc),transparent:true}));
+  rune.rotation.x=-Math.PI/2; rune.position.set(0,0.006,cz); wing.add(rune);
+}
+
+// True whether (x,z) in world space has crossed past the hidden-room
+// threshold. Used both for movement clamping and for the audio isolation
+// gate below — once past the doorway, the two sides are acoustically
+// separate zones, not just far apart by distance.
+function isInSecretWing(x, z) {
+  const th=doorWallInfo.ry+Math.PI, dc=Math.cos(th), ds=Math.sin(th);
+  const dox=x-doorWallInfo.mid[0], doz=z-doorWallInfo.mid[1];
+  const localZ = dox*ds + doz*dc;
+  return localZ > 0.5;
 }
 
 // West wall — the reactor/coolant core, standing in for a hearth: the
@@ -1147,19 +1349,27 @@ function wireSpatial(uid, track) {
     panGain.gain.value = spatialMode?1:0;
     flatGain.gain.value = spatialMode?0:1;
 
+    // Isolation gate: hard-muted whenever speaker and listener are on
+    // opposite sides of the hidden-room doorway (see isInSecretWing).
+    // Applies after the crossfade, so it holds in either audio mode — this
+    // is the actual "soundproofing", not just distance falloff.
+    const isoGain=audioCtx.createGain();
+    isoGain.gain.value=1;
+
     // Per-listener volume for this one speaker — independent of spatial
     // position or mode, a plain multiplier on top of everything else.
     const volGain=audioCtx.createGain();
     volGain.gain.value = users[uid].volume ?? 1;
     users[uid].volume = volGain.gain.value;
 
-    src.connect(pan); pan.connect(panGain); panGain.connect(volGain);
-    src.connect(flatGain); flatGain.connect(volGain);
-    volGain.connect(audioCtx.destination);
+    src.connect(pan); pan.connect(panGain); panGain.connect(isoGain);
+    src.connect(flatGain); flatGain.connect(isoGain);
+    isoGain.connect(volGain); volGain.connect(audioCtx.destination);
 
     users[uid].panner=pan;
     users[uid].panGain=panGain;
     users[uid].flatGain=flatGain;
+    users[uid].isoGain=isoGain;
     users[uid].volGain=volGain;
     setPannerPos(uid);
   } catch(e) {
@@ -1169,12 +1379,14 @@ function wireSpatial(uid, track) {
 }
 
 function wireAmbient(track) {
-  // Screen share / GM music: routed directly to destination with no panning.
+  // Screen share / GM music: routed directly to destination with no
+  // panning, but still gated off inside the hidden room so it doesn't
+  // bleed in there either.
   ensureACtx();
   try {
     const src = audioCtx.createMediaStreamSource(new MediaStream([track.getMediaStreamTrack()]));
     const gain = audioCtx.createGain();
-    gain.gain.value = 0.85;
+    gain.gain.value = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
     src.connect(gain);
     gain.connect(audioCtx.destination);
     musicGain = gain;
@@ -1184,50 +1396,28 @@ function wireAmbient(track) {
   }
 }
 
-// A low-key synthesized room-tone loop — server hum, not music — so the
-// room never sits in dead silence during a long session. Generated locally
-// via WebAudio (brown-noise integration through a lowpass filter) rather
-// than shipping an audio file, keeping this a single static index.html with
-// no extra assets to fetch. Routed through the same spatial/flat crossfade
-// pattern as player voices, positioned at the room's center, so the existing
-// audio-mode toggle also governs how this reads.
-function startAmbientHum() {
-  ensureACtx();
-  if (humNodes) return;
-  const bufSize = audioCtx.sampleRate * 4; // loop long enough that the seam isn't noticeable
-  const buffer = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  let last=0;
-  for (let i=0;i<bufSize;i++){
-    const white=Math.random()*2-1;
-    last=(last+0.02*white)/1.02;
-    data[i]=last*3.2;
-  }
-  const src=audioCtx.createBufferSource();
-  src.buffer=buffer; src.loop=true;
-  const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=320;
-  const panner=audioCtx.createPanner();
-  panner.panningModel='HRTF'; panner.distanceModel='inverse';
-  panner.refDistance=3; panner.maxDistance=20; panner.rolloffFactor=0.6;
-  panner.positionX.value=0; panner.positionY.value=WALL_H*0.5; panner.positionZ.value=0;
-  const panGain=audioCtx.createGain(), flatGain=audioCtx.createGain();
-  panGain.gain.value=spatialMode?1:0; flatGain.gain.value=spatialMode?0:1;
-  const master=audioCtx.createGain(); master.gain.value=0.11; // subtle — this plays for hours
-  src.connect(lp); lp.connect(panner); panner.connect(panGain); lp.connect(flatGain);
-  panGain.connect(master); flatGain.connect(master); master.connect(audioCtx.destination);
-  src.start();
-  humNodes = {src, panGain, flatGain};
+function updateMusicIsolation() {
+  if (!musicGain || !audioCtx) return;
+  const target = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
+  musicGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.1);
 }
 
 function setPannerPos(uid) {
   const u=users[uid];
   if (!u||!u.panner||!u.grp) return;
   const p=u.grp.position, t=audioCtx.currentTime;
+  // Always keep the panner at the speaker's real position — harmless while
+  // muted via isoGain below, and means crossing back into the same zone is
+  // instantly correct with no re-sync needed.
   u.panner.positionX.setValueAtTime(p.x,t);
   u.panner.positionY.setValueAtTime(p.y+EYE_H,t);
   u.panner.positionZ.setValueAtTime(p.z,t);
   if (u.panGain) u.panGain.gain.setTargetAtTime(spatialMode?1:0, t, 0.1);
   if (u.flatGain) u.flatGain.gain.setTargetAtTime(spatialMode?0:1, t, 0.1);
+  if (u.isoGain) {
+    const sameZone = isInSecretWing(p.x,p.z) === isInSecretWing(playerPos.x,playerPos.z);
+    u.isoGain.gain.setTargetAtTime(sameZone ? 1 : 0, t, 0.1);
+  }
 }
 
 // Per-listener volume for one specific remote user, independent of
@@ -1280,12 +1470,31 @@ function animate() {
     if(keys['KeyA']||keys['ArrowLeft'])  playerPos.addScaledVector(rt,-spd);
     if(keys['KeyD']||keys['ArrowRight']) playerPos.addScaledVector(rt, spd);
 
-    const margin=0.45;
-    playerPos.x=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.x));
-    playerPos.z=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.z));
-    const limit=2*OCT_HW-OCT_CH-margin;
-    const s=Math.abs(playerPos.x)+Math.abs(playerPos.z);
-    if(s>limit){ const k=limit/s; playerPos.x*=k; playerPos.z*=k; }
+    // is the player at/through the hidden-room doorway? clamp within that
+    // passage instead of the main room so the archway is walkable, not a wall.
+    const th=doorWallInfo.ry+Math.PI, dc=Math.cos(th), ds=Math.sin(th);
+    const dox=playerPos.x-doorWallInfo.mid[0], doz=playerPos.z-doorWallInfo.mid[1];
+    const localX = dox*dc - doz*ds, localZ = dox*ds + doz*dc;
+    const doorHalf = (localZ < SECRET_CORR_L ? SECRET_CORR_W/2 : SECRET_ROOM_W/2) + 0.15;
+
+    // Trigger well before the main room's own clamp margin would otherwise
+    // pin the player short of this zone and deadlock them just outside the
+    // doorway.
+    if (localZ > -1.0 && Math.abs(localX) < doorHalf) {
+      const maxLz = SECRET_CORR_L + SECRET_ROOM_D - 0.3;
+      const clampedLz = Math.min(maxLz, localZ);
+      const maxLx = (clampedLz < SECRET_CORR_L ? SECRET_CORR_W/2-0.15 : SECRET_ROOM_W/2-0.3);
+      const clampedLx = Math.max(-maxLx, Math.min(maxLx, localX));
+      playerPos.x = doorWallInfo.mid[0] + clampedLx*dc + clampedLz*ds;
+      playerPos.z = doorWallInfo.mid[1] - clampedLx*ds + clampedLz*dc;
+    } else {
+      const margin=0.45;
+      playerPos.x=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.x));
+      playerPos.z=Math.max(-(OCT_HW-margin),Math.min(OCT_HW-margin,playerPos.z));
+      const limit=2*OCT_HW-OCT_CH-margin;
+      const s=Math.abs(playerPos.x)+Math.abs(playerPos.z);
+      if(s>limit){ const k=limit/s; playerPos.x*=k; playerPos.z*=k; }
+    }
 
     velY += GRAVITY * dt;
     playerPos.y += velY * dt;
@@ -1306,6 +1515,7 @@ function animate() {
   }
 
   updateListener();
+  updateMusicIsolation();
 
   // held token follows the crosshair across the map, throttled network
   // update so everyone sees it move live during a drag, not just on drop
@@ -1456,6 +1666,7 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (users[uid].panner) { try{users[uid].panner.disconnect();}catch(_){} }
       if (users[uid].panGain) { try{users[uid].panGain.disconnect();}catch(_){} }
       if (users[uid].flatGain) { try{users[uid].flatGain.disconnect();}catch(_){} }
+      if (users[uid].isoGain) { try{users[uid].isoGain.disconnect();}catch(_){} }
       if (users[uid].volGain) { try{users[uid].volGain.disconnect();}catch(_){} }
       users[uid].audioTrack = ru.audioTrack;
       users[uid].hasAudio = true;
@@ -1470,10 +1681,12 @@ async function initAgora(appId, room, myName, asDM, token) {
       if (users[ru.uid].panner) { try{users[ru.uid].panner.disconnect();}catch(_){} }
       if (users[ru.uid].panGain) { try{users[ru.uid].panGain.disconnect();}catch(_){} }
       if (users[ru.uid].flatGain) { try{users[ru.uid].flatGain.disconnect();}catch(_){} }
+      if (users[ru.uid].isoGain) { try{users[ru.uid].isoGain.disconnect();}catch(_){} }
       if (users[ru.uid].volGain) { try{users[ru.uid].volGain.disconnect();}catch(_){} }
       users[ru.uid].panner=null;
       users[ru.uid].panGain=null;
       users[ru.uid].flatGain=null;
+      users[ru.uid].isoGain=null;
       users[ru.uid].volGain=null;
       users[ru.uid].hasAudio=false;
     }
@@ -1572,7 +1785,6 @@ async function initAgora(appId, room, myName, asDM, token) {
   }catch(e){}
 
   sendName(myName,asDM);
-  startAmbientHum();
   // Broadcast position frequently — use 50ms for smooth movement
   setInterval(broadcastPos, 50);
 }
