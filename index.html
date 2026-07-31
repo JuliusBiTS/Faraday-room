@@ -1132,14 +1132,19 @@ function redrawMapScreen() {
     flctx.globalCompositeOperation = 'source-over';
 
     ctx.save();
-    // GM sees a faint tint through (can still plan against the real map
+    // GM sees a tint through (can still plan against the real map
     // underneath, and revealed devices/tokens stay visible regardless of
     // terrain fog — CP_Phantom treats fog and reveal state as
     // independent systems, and this keeps that exact behavior rather
     // than inventing a stricter rule); players get a near-opaque cover —
     // same GM/player split buildFogHtml's own interactive-vs-not opacity
-    // applies.
-    ctx.globalAlpha = isDM ? 0.32 : 0.94;
+    // is based on, though darker here than CP_Phantom's own 0.28: this is
+    // a big shared prop the whole party stares at rather than a private
+    // GM utility page, and CP_Phantom's original opacity all but
+    // disappears against a bright, colorful map — 0.62 still reads
+    // clearly as "still fogged" while leaving real GM-only value (the
+    // map/tokens/security objects underneath are dimmed, not hidden).
+    ctx.globalAlpha = isDM ? 0.62 : 0.94;
     ctx.drawImage(mapSyncFogCanvas, fx, fy, fw, fh);
     ctx.restore();
   }
