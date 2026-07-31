@@ -973,6 +973,12 @@ function redrawMapScreen() {
   if (!mapSync.connected) return; // never attempted, or nothing has come back yet — leave the standby placeholder alone
   const ctx = mapScreenCtx, W = mapScreenCanvas.width, H = mapScreenCanvas.height;
   const campaign = mapSync.campaign || {};
+  // Temporary on-screen diagnostic readout (see the bottom of this
+  // function) — DevTools console navigation turned out to be more
+  // friction than expected, so this puts the same numbers directly on
+  // the wall screen itself instead. Populated inside the tokens section
+  // below; drawn last, unclipped, so it's visible no matter what.
+  const debugInfo = { totalTokenIds: 0, drawnTokens: 0, missingChar: [], hiddenSkipped: 0 };
 
   if (!mapSync.image) {
     // Connected, but the GM hasn't uploaded a map yet — same state
@@ -1145,9 +1151,11 @@ function redrawMapScreen() {
   const mapTokens = campaign.map?.tokens || {};
   const tokenIds = new Set(order);
   Object.keys(mapTokens).forEach(id => tokenIds.add(id));
+  debugInfo.totalTokenIds = tokenIds.size;
   tokenIds.forEach(id => {
     const c = characters[id];
     if (!c) {
+      debugInfo.missingChar.push(id);
       // Diagnostic: a token id shows up in combat.order/map.tokens but
       // has no matching campaign.characters entry, so CP_Phantom's own
       // buildMapTokensHtml would ALSO skip it (`if (!c) return ''`) — if
@@ -1164,7 +1172,8 @@ function redrawMapScreen() {
     const pos = mapTokens[id] || { x:50, y:50 };
     // A hidden token is invisible to players outright, same as
     // CP_Phantom's own player map — not dimmed, not drawn at all.
-    if (!isDM && pos.hidden) return;
+    if (!isDM && pos.hidden) { debugInfo.hiddenSkipped++; return; }
+    debugInfo.drawnTokens++;
 
     const color = c.isCompanion ? MAPSYNC_TOK_BLUE : (c.isAlly ? MAPSYNC_TOK_GREEN : (c.isNPC ? MAPSYNC_TOK_RED : MAPSYNC_TOK_CYAN));
     const shape = c.isDrone ? 'hexagon' : (c.isVehicle ? 'square' : (c.isCompanion ? 'octagon' : 'circle'));
@@ -1348,6 +1357,28 @@ function redrawMapScreen() {
     console.error('CP_Phantom map sync: redraw failed partway through — some elements may be missing this frame. This is a bug, not expected campaign data:', e);
   } finally {
     ctx.restore(); // pop the fitted-rect clip pushed above, even if the try block threw
+  }
+
+  // Temporary on-screen diagnostic strip, top-left corner, unclipped —
+  // drawn last so it's never obscured by the map/fog. Remove once the
+  // token-visibility mismatch is understood; not gated behind isDM
+  // since the point right now is seeing it from either role.
+  {
+    const chars = Object.keys(campaign.characters || {}).length;
+    const lines = [
+      `SYNC DEBUG — isDM:${isDM}  chars:${chars}  tokenIds:${debugInfo.totalTokenIds}  drawn:${debugInfo.drawnTokens}  hiddenSkipped:${debugInfo.hiddenSkipped}`,
+      debugInfo.missingChar.length ? `missing char record for: ${debugInfo.missingChar.join(', ')}` : '',
+    ].filter(Boolean);
+    ctx.save();
+    ctx.font = '13px "Share Tech Mono",monospace';
+    const padding = 6, lineH = 16;
+    const boxW = Math.max(...lines.map(l => ctx.measureText(l).width)) + padding*2;
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(4, 4, boxW, lines.length*lineH + padding*2);
+    ctx.fillStyle = '#ffcc00';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    lines.forEach((l,i) => ctx.fillText(l, 4+padding, 4+padding+i*lineH));
+    ctx.restore();
   }
 
   mapScreenTexture.needsUpdate = true;
