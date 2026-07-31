@@ -947,6 +947,16 @@ function redrawMapScreen() {
   const fx = (W-fw)/2, fy = (H-fh)/2;
   ctx.drawImage(mapSync.image, fx, fy, fw, fh);
 
+  // Everything from here on (devices, tokens, fog, the ping pulse) is
+  // clipped to the map's own fitted rectangle — a security-device cone
+  // near the map's edge, or a large-radius zone with no map scale set
+  // yet, can otherwise extend past the actual image into the surrounding
+  // letterbox/background, which reads as a rendering glitch rather than
+  // a device that's simply near the map boundary. Closed again right
+  // before the texture upload at the end of this function.
+  ctx.save();
+  ctx.beginPath(); ctx.rect(fx, fy, fw, fh); ctx.clip();
+
   const toX = p => fx + (p/100)*fw;
   const toY = p => fy + (p/100)*fh;
   const lenX = p => (p/100)*fw;
@@ -1136,15 +1146,16 @@ function redrawMapScreen() {
     // underneath, and revealed devices/tokens stay visible regardless of
     // terrain fog — CP_Phantom treats fog and reveal state as
     // independent systems, and this keeps that exact behavior rather
-    // than inventing a stricter rule); players get a near-opaque cover —
-    // same GM/player split buildFogHtml's own interactive-vs-not opacity
-    // is based on, though darker here than CP_Phantom's own 0.28: this is
-    // a big shared prop the whole party stares at rather than a private
-    // GM utility page, and CP_Phantom's original opacity all but
-    // disappears against a bright, colorful map — 0.62 still reads
-    // clearly as "still fogged" while leaving real GM-only value (the
-    // map/tokens/security objects underneath are dimmed, not hidden).
-    ctx.globalAlpha = isDM ? 0.62 : 0.94;
+    // than inventing a stricter rule); players get a FULLY opaque cover
+    // — CP_Phantom's own buildFogHtml uses opacity 1 (not partial) for
+    // its non-interactive/player fill, so this matches that exactly
+    // rather than the 0.94 this briefly had, which read as too thin on
+    // a shared display. GM tint is darker than CP_Phantom's own 0.28
+    // for the same "shared prop, not a private GM page" reason as
+    // above — 0.62 still reads clearly as "still fogged" while leaving
+    // real GM-only value (the map/tokens/security objects underneath
+    // are dimmed, not hidden).
+    ctx.globalAlpha = isDM ? 0.62 : 1;
     ctx.drawImage(mapSyncFogCanvas, fx, fy, fw, fh);
     ctx.restore();
   }
@@ -1167,6 +1178,8 @@ function redrawMapScreen() {
       ctx.restore();
     }
   }
+
+  ctx.restore(); // pop the fitted-rect clip pushed right after the base image draw
 
   mapScreenTexture.needsUpdate = true;
 }
