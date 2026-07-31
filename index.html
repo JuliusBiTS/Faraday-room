@@ -813,6 +813,21 @@ function initMapSync(dbUrl) {
   }
 }
 
+// Firebase's Realtime Database can (and does, in practice) serialize a JS
+// array with sparse/non-sequential indices as a plain OBJECT with numeric
+// string keys instead of a true Array — a well-known RTDB quirk that
+// shows up any time entries were removed from the middle of an array-
+// shaped field over a session (combat.order, fogShapes, a brush stroke's
+// points). `new Set(x)` or `x.forEach(...)` on such a value throws
+// (plain objects aren't iterable), which — before this helper existed —
+// silently aborted the rest of a redraw partway through. Normalizes
+// either shape back into a flat, always-iterable array.
+function mapSyncAsArray(v) {
+  if (Array.isArray(v)) return v;
+  if (v && typeof v === 'object') return Object.values(v);
+  return [];
+}
+
 function mapSyncMetersPerPercent(campaign) {
   if (!campaign.mapScaleMetersWidth) return null;
   const perPercentX = campaign.mapScaleMetersWidth / 100;
@@ -973,6 +988,19 @@ function redrawMapScreen() {
   ctx.save();
   ctx.beginPath(); ctx.rect(fx, fy, fw, fh); ctx.clip();
 
+  // Everything below runs inside a try/finally: this reads live,
+  // externally-authored Firebase data whose exact shape this client
+  // doesn't control, and a single unexpected value (see mapSyncAsArray's
+  // own doc comment for a real example) throwing partway through used to
+  // silently abort the ENTIRE rest of the redraw — skipping every token
+  // after that point, skipping fog, and leaving the clip pushed above
+  // never popped, corrupting every frame after it too. The finally
+  // guarantees the clip always comes back off even if something throws;
+  // the catch logs loudly instead of failing silently, so a real data
+  // shape mismatch shows up in the console instead of just quietly
+  // undrawing content.
+  try {
+
   const toX = p => fx + (p/100)*fw;
   const toY = p => fy + (p/100)*fh;
   const lenX = p => (p/100)*fw;
@@ -1075,7 +1103,7 @@ function redrawMapScreen() {
   // A token can exist on the map without its character being in active
   // combat at all (prepping an encounter) — same union CP_Phantom's own
   // buildMapTokensHtml uses: "currently fighting" OR "has a saved map position".
-  const order = campaign.combat?.order || [];
+  const order = mapSyncAsArray(campaign.combat?.order);
   const characters = campaign.characters || {};
   const mapTokens = campaign.map?.tokens || {};
   const tokenIds = new Set(order);
@@ -1163,7 +1191,7 @@ function redrawMapScreen() {
     // CP_Phantom's own feGaussianBlur on its fog-shapes group, so a
     // reveal hole reads as mist clearing, not a hard vector cutout.
     flctx.filter = `blur(${Math.max(2, Math.round(Math.min(fW,fH)*0.01))}px)`;
-    (campaign.fogShapes || []).forEach(s => {
+    mapSyncAsArray(campaign.fogShapes).forEach(s => {
       const isHide = s.type === 'hide';
       flctx.globalCompositeOperation = isHide ? 'source-over' : 'destination-out';
       flctx.fillStyle = isHide ? FOG_COLOR : '#000';
@@ -1173,7 +1201,7 @@ function redrawMapScreen() {
         const w = shX(Math.abs(s.x2-s.x1)), h = shY(Math.abs(s.y2-s.y1));
         flctx.fillRect(x,y,w,h);
       } else {
-        const pts = s.points || [];
+        const pts = mapSyncAsArray(s.points);
         if (pts.length) {
           flctx.beginPath();
           flctx.moveTo(shX(pts[0].x), shY(pts[0].y));
@@ -1265,7 +1293,11 @@ function redrawMapScreen() {
     }
   }
 
-  ctx.restore(); // pop the fitted-rect clip pushed right after the base image draw
+  } catch (e) {
+    console.error('CP_Phantom map sync: redraw failed partway through — some elements may be missing this frame. This is a bug, not expected campaign data:', e);
+  } finally {
+    ctx.restore(); // pop the fitted-rect clip pushed above, even if the try block threw
+  }
 
   mapScreenTexture.needsUpdate = true;
 }
