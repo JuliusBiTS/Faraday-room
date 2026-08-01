@@ -91,6 +91,8 @@ body.locked #crosshair{opacity:1}
 .pb:hover{background:rgba(217,138,61,.1);border-color:var(--amb);color:var(--amb)}
 .pb.active{border-color:var(--r);color:var(--r);box-shadow:0 0 10px rgba(201,68,86,.3)}
 .pb.active:hover{background:rgba(201,68,86,.1);border-color:var(--r);color:var(--r)}
+.pb:disabled{opacity:.35;cursor:not-allowed}
+.pb:disabled:hover{background:transparent;border-color:rgba(217,138,61,.28);color:rgba(217,138,61,.7)}
 .mstat{font-size:9px;letter-spacing:1px;color:rgba(217,138,61,.45);text-align:center;padding:6px 0 2px}
 .mstat.on{color:var(--g)}
 .recent-row{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
@@ -116,6 +118,14 @@ body.locked #crosshair{opacity:1}
 #focus-video{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#111}
 #focus-label{position:absolute;top:8px;left:8px;background:rgba(2,3,5,.75);color:#2fd8e8;font-family:var(--fm);font-size:10px;letter-spacing:2px;text-transform:uppercase;padding:4px 8px}
 .focus-hint{position:absolute;bottom:8px;right:8px;background:rgba(2,3,5,.75);color:rgba(47,216,232,.7);font-family:var(--fm);font-size:9px;letter-spacing:1px;text-transform:uppercase;padding:4px 8px}
+
+/* Ad overlay — deliberately garish (hot magenta) against the room's own
+   muted cyan/amber palette; the visual clash IS the joke, a burst of
+   loud corporate junk breaking into an otherwise minimalist room. */
+#ad-overlay{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);width:440px;background:#000;border:3px solid #ff2f9e;box-shadow:0 0 40px rgba(255,47,158,.5),0 8px 30px rgba(0,0,0,.7);z-index:220;pointer-events:none}
+#ad-image{width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#0a0a0a}
+#ad-label{position:absolute;top:8px;left:8px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:10px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;padding:4px 10px}
+#ad-skip-hint{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:11px;letter-spacing:1px;text-transform:uppercase;padding:5px 10px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
 
 canvas{display:block}
 </style>
@@ -148,6 +158,13 @@ canvas{display:block}
       <label class="fl" for="f-dburl">CP_Phantom Datenbank-URL (optional)</label>
       <input class="fi" id="f-dburl" type="text" placeholder="https://dein-projekt-default-rtdb.firebaseio.com" autocomplete="off" spellcheck="false"/>
       <div class="fh">Spiegelt Karte, Token und Nebel des Kriegs vom GM-Tool live auf die Nordwand. Leer lassen, wenn keine Kampagne läuft — die Wand bleibt dann einfach im Standby.</div>
+    </div>
+    <div class="fg" id="f-char-wrap" style="display:none">
+      <label class="fl" for="f-charid">Charakter verknüpfen (optional)</label>
+      <select class="fi" id="f-charid">
+        <option value="">(kein Charakter)</option>
+      </select>
+      <div class="fh">Verknüpft deinen Eurodollar-Kontostand mit den Kosten fürs Werbung-Überspringen. Ohne Verknüpfung sind Skips kostenlos.</div>
     </div>
     <label class="dm-row">
       <input type="checkbox" id="f-isdm"/>
@@ -202,6 +219,12 @@ canvas{display:block}
     <div class="mstat">Hotkey: M</div>
   </div>
   <div class="gm-sec">
+    <div class="gstt">Werbung</div>
+    <button class="pb" id="ad-trigger-btn" title="Hotkey: N">📺 Werbung jetzt zeigen</button>
+    <button class="pb" id="ad-toggle-btn">🚫 Werbung stoppen</button>
+    <div class="mstat">Hotkey: N · automatisch 1x/Stunde</div>
+  </div>
+  <div class="gm-sec">
     <div class="gstt">Tabletopaudio</div>
     <input class="pi" id="tta-url" type="text" placeholder="https://tabletopaudio.com/..."/>
     <button class="pb" id="tta-btn">► Laden</button>
@@ -254,6 +277,19 @@ canvas{display:block}
   <div class="focus-hint">F zum Schließen</div>
 </div>
 
+<!-- Ad interruption overlay — pointer-events:none on the wrapper (see
+     #ad-overlay CSS) so WASD/mouselook keep working underneath; this is
+     never a modal. Pointer lock hides the real cursor during normal play,
+     so skipping is keyboard-driven (X), same convention as the room's
+     other pointer-locked interactions (F to focus/pick up, M to mute-all)
+     rather than a literally clickable × — a mouse click has nothing to
+     land on with no visible cursor. -->
+<div id="ad-overlay" style="display:none">
+  <img id="ad-image" src=""/>
+  <div id="ad-label">WERBUNG</div>
+  <div id="ad-skip-hint" style="display:none">X zum Überspringen</div>
+</div>
+
 <script>
 'use strict';
 
@@ -280,6 +316,21 @@ const SECRET_CORR_W  = 1.25; // hidden-passage corridor width
 const SECRET_CORR_L  = 4.8;  // corridor length — kept long so spatial audio (inverse falloff, not a hard cutoff) has enough real distance to fade voices out before the hard isolation gate even kicks in
 const SECRET_ROOM_W  = 2.5;  // hidden side room width
 const SECRET_ROOM_D  = 2.5;  // hidden side room depth
+
+// ══════════ ADS ══════════
+// Shared by the passive south-wall billboard (image only) and the full
+// ad-interruption system (image + jingle). Two placeholders now — drop
+// more image+jingle pairs into ads/ and add an entry here to expand the
+// library later; both systems just pick randomly from whatever's here.
+const AD_LIBRARY = [
+  { image: 'ads/moodpatch.png', jingle: 'ads/moodpatch.wav', name: 'MOODPATCH' },
+  { image: 'ads/penthouse.png', jingle: 'ads/penthouse.wav', name: 'Arasaka Real Estate' },
+];
+const BILLBOARD_HOLD_S = 14;  // seconds each billboard ad stays up
+const BILLBOARD_FADE_S = 2.5; // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
+const AD_NO_SKIP_S     = 5;   // seconds before a skip option appears at all — the joke is that it's genuinely unskippable at first
+const AD_SKIP_BASELINE_ED = 50; // eurodollar cost to skip the instant skipping becomes possible, decaying to 0 as the ad's remaining runtime elapses — tune freely, no design math behind this number
+const AD_HOUR_MS = 60*60*1000; // automatic trigger interval
 
 // ══════════ PALETTE ══════════
 // Deliberately few bright accent sources (reactor glow, the north holo-screen,
@@ -352,6 +403,7 @@ const JUMP_FORCE = 6;
 const MUSIC_UID_OFFSET = 1000000;
 let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
 let localUID = null, localName = '', isDM = false;
+let linkedCharId = null; // player's chosen campaign/characters/{id} for ad-skip billing — null if unset (DM never has one, see the join handler)
 let joinedAppId = null, joinedRoom = null, joinedToken = null;
 let micMuted = false, camOff = false, streaming = false;
 let forceMuted = false, preForceMuteState = false; // players: muted by the GM, cannot self-unmute
@@ -417,8 +469,20 @@ document.addEventListener('keydown', e => {
     removeToken(heldTokenId, true);
     heldTokenId = null;
   }
+  // Ad skip — separate from the token-removal X above (that one requires
+  // isDM+heldTokenId, this one only ever applies to a player mid-ad,
+  // since showAdOverlay never sets currentAd on the DM's own client — so
+  // the two never actually compete for the same keypress).
+  if (e.code === 'KeyX' && isLocked && currentAd) {
+    skipAd();
+  }
   if (e.code === 'KeyM' && isLocked && isDM) {
     document.getElementById('mute-all-btn').click();
+  }
+  // N, not W — W is already "move forward" (WASD), which would otherwise
+  // fire an ad on every single step.
+  if (e.code === 'KeyN' && isLocked && isDM) {
+    document.getElementById('ad-trigger-btn').click();
   }
 });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
@@ -1801,6 +1865,74 @@ function buildBlastDoor() {
     new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(pc)}));
   placard.position.set(w.mid[0]+placardOffset.x,1.9,w.mid[1]+placardOffset.z); placard.rotation.y=w.ry; scene.add(placard);
   setTimeout(()=>{ drawPlacard(true); placard.material.map.needsUpdate=true; }, 1800);
+
+  buildBillboard(w);
+}
+
+// A corporate ad billboard bolted onto the blast door itself — plastered
+// right over the door's own infrastructure, which is exactly the joke:
+// no surface in this world is exempt from ad space, not even the thing
+// keeping you safe. Cycles through AD_LIBRARY with a slow crossfade (see
+// updateBillboard, driven from the main animate() loop) — never a hard
+// cut, matching the room's own no-strobe rule. Purely decorative: this
+// is the "not very ambitious" half of the ad feature, unrelated to (and
+// not gated by) the DM's ad-system kill switch below, which only
+// controls the interruptive overlay.
+let billboardCanvas, billboardCtx, billboardTexture;
+let billboardImages = [];
+let billboardIndex = 0;
+let billboardElapsed = 0;
+function buildBillboard(w) {
+  const BW = 2.6, BH = 1.2, by = 1.15;
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(BW+0.12,BH+0.12,0.05),mat(GLASS,0,0,0.5,0.3));
+  frame.position.set(w.mid[0],by,w.mid[1]); frame.rotation.y=w.ry; scene.add(frame);
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(BW+0.18,BH+0.18,0.025),mat(0xff2f9e,0xff2f9e,1.1));
+  edge.position.set(w.mid[0],by,w.mid[1]); edge.rotation.y=w.ry; scene.add(edge);
+
+  billboardCanvas = document.createElement('canvas');
+  billboardCanvas.width = 900; billboardCanvas.height = Math.round(900*(BH/BW));
+  billboardCtx = billboardCanvas.getContext('2d');
+  billboardCtx.fillStyle='#050505'; billboardCtx.fillRect(0,0,billboardCanvas.width,billboardCanvas.height);
+  billboardTexture = new THREE.CanvasTexture(billboardCanvas);
+
+  const offset = new THREE.Vector3(0,0,0.03).applyEuler(new THREE.Euler(0,w.ry,0));
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(BW,BH), new THREE.MeshBasicMaterial({map:billboardTexture}));
+  screen.position.set(w.mid[0]+offset.x,by,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
+
+  billboardImages = AD_LIBRARY.map(ad => { const img=new Image(); img.src=ad.image; return img; });
+}
+
+// Draws `img` centered and letterboxed (never distorted) into a W x H
+// box at the given alpha — shared by the current and incoming ad during
+// a crossfade, since AD_LIBRARY images can have very different native
+// aspect ratios.
+function drawAdContain(ctx, img, W, H, alpha) {
+  if (!img || !img.complete || !img.naturalWidth) return;
+  const scale = Math.min(W/img.naturalWidth, H/img.naturalHeight);
+  const dw = img.naturalWidth*scale, dh = img.naturalHeight*scale;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(img, (W-dw)/2, (H-dh)/2, dw, dh);
+  ctx.restore();
+}
+
+function updateBillboard(dt) {
+  if (!billboardCtx || !billboardImages.length) return;
+  billboardElapsed += dt;
+  const W = billboardCanvas.width, H = billboardCanvas.height;
+  const ctx = billboardCtx;
+  ctx.fillStyle = '#050505'; ctx.fillRect(0,0,W,H);
+  drawAdContain(ctx, billboardImages[billboardIndex], W, H, 1);
+  if (billboardElapsed > BILLBOARD_HOLD_S) {
+    const nextIdx = (billboardIndex+1) % billboardImages.length;
+    const fadeT = Math.min(1, (billboardElapsed-BILLBOARD_HOLD_S)/BILLBOARD_FADE_S);
+    drawAdContain(ctx, billboardImages[nextIdx], W, H, fadeT);
+    if (billboardElapsed > BILLBOARD_HOLD_S+BILLBOARD_FADE_S) {
+      billboardIndex = nextIdx;
+      billboardElapsed = 0;
+    }
+  }
+  billboardTexture.needsUpdate = true;
 }
 
 // Runner ID-badge frames — chrome/neon-edge holo-frames on the four
@@ -2407,6 +2539,9 @@ function animate() {
   if(ceilingLightA) ceilingLightA.intensity = 0.55 + Math.sin(_t*0.4)*0.05;
   if(ceilingLightB) ceilingLightB.intensity = 0.5 + Math.sin(_t*0.4+2)*0.05;
 
+  updateBillboard(dt);
+  updateAdOverlay();
+
   renderer.render(scene,camera);
 }
 
@@ -2571,6 +2706,16 @@ async function initAgora(appId, room, myName, asDM, token) {
           if(localAudio) localAudio.setEnabled(!micMuted);
           setMicUI();
         }
+        updateAdMuteState(); // mute-all silences an in-progress ad too
+      }
+      if(msg.type==='adTrigger'){
+        if(msg.ts!==lastAdTriggerTs){
+          lastAdTriggerTs=msg.ts;
+          showAdOverlay(msg.adIndex);
+        }
+      }
+      if(msg.type==='adForceClose'){
+        closeAdOverlay(); // DM kill switch — free, no transaction, regardless of who was showing what
       }
     }catch(e){ console.warn('stream-message parse failed:', e, 'from uid', uid); }
   });
@@ -2681,6 +2826,189 @@ async function toggleStream(){
   }
 }
 
+// ══════════ AD SYSTEM ══════════
+// The interruptive half of the ad feature — character linking, the
+// synced trigger, the skip-with-payment overlay, and the DM kill switch.
+// Builds on the SAME Firebase connection the map sync already opens
+// (mapSync.db) rather than a second one, per the brief. Currency field
+// name/path verified directly against CP_Phantom's own source: character
+// records store `eurodollar` (not `eb` — that's only the UI's short
+// label on CP_Phantom's own edit-modal input), written at
+// `campaign/characters/{id}/eurodollar`, so that's what this reads/writes
+// too, via the same transaction()-based pattern reasoning applies to any
+// balance multiple clients could touch concurrently.
+
+let adsEnabled = true; // DM-only kill switch — gates BOTH the hourly timer and the manual trigger button; does not affect the passive billboard
+let adHourTimer = null;
+let lastAdTriggerTs = undefined; // ephemeral broadcast, not Firebase-backed state — no "replay on join" risk the way mapPing/portraitReveal have, so no skip-first-sync convention needed here
+let currentAd = null; // {adIndex, startTime, audioEl, gain, duration} while an ad overlay is showing locally
+
+// One-off, throwaway read (NOT the persistent mapSync connection — that
+// only opens at actual room join) so the join screen can populate a
+// character dropdown before anyone has joined anything. Wired to the
+// f-dburl blur event and the f-isdm checkbox below.
+async function refreshCharacterPicker() {
+  const wrap = document.getElementById('f-char-wrap');
+  const select = document.getElementById('f-charid');
+  const dbUrl = document.getElementById('f-dburl').value.trim();
+  if (!dbUrl || document.getElementById('f-isdm').checked) { wrap.style.display='none'; return; }
+  let tempApp = null;
+  try {
+    tempApp = firebase.initializeApp({ databaseURL: dbUrl }, 'faraday-charpicker-' + Date.now());
+    const snap = await firebase.database(tempApp).ref('campaign/characters').get();
+    const chars = snap.exists() ? snap.val() : {};
+    select.innerHTML = '<option value="">(kein Charakter)</option>';
+    Object.entries(chars).forEach(([id, c]) => {
+      // Plain player character only — same "pc" bucket CP_Phantom's own
+      // character-type derivation uses (isVehicle/isDrone/isSecurityUnit
+      // always imply isNPC:true on the CP_Phantom side, so !isNPC alone
+      // would already cover them, but checking all five directly is
+      // cheap insurance against any inconsistent/legacy record).
+      const isPC = !c.isNPC && !c.isCompanion && !c.isVehicle && !c.isDrone && !c.isSecurityUnit;
+      if (!isPC) return;
+      const opt = document.createElement('option');
+      opt.value = id; opt.textContent = c.name || id;
+      select.appendChild(opt);
+    });
+    wrap.style.display = select.options.length > 1 ? 'block' : 'none';
+  } catch(e) {
+    console.warn('Charakter-Liste konnte nicht geladen werden — Verknüpfung bleibt optional/leer:', e);
+    wrap.style.display = 'none';
+  } finally {
+    if (tempApp) { try { await tempApp.delete(); } catch(_){} }
+  }
+}
+
+// DM-authoritative, matching the room's existing pattern for anything
+// that must fire at the same real moment for everyone (see the
+// shooting-star/ping-style comments elsewhere in this file): only the
+// DM's own client runs the hourly timer and sends the manual trigger, so
+// there's exactly one source of truth and no risk of every client
+// independently deciding "it's been an hour" and double-firing.
+function startAdHourlyTimer() {
+  if (adHourTimer) clearInterval(adHourTimer);
+  adHourTimer = setInterval(() => { if (adsEnabled) triggerAdBroadcast(); }, AD_HOUR_MS);
+}
+
+async function triggerAdBroadcast() {
+  if (!agoraClient || !AD_LIBRARY.length) return;
+  const adIndex = Math.floor(Math.random() * AD_LIBRARY.length);
+  try {
+    await agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({ type:'adTrigger', ts:Date.now(), adIndex })), true);
+  } catch(e) { console.warn('Werbe-Trigger-Broadcast fehlgeschlagen:', e); }
+}
+
+function updateAdsToggleUI() {
+  const toggleBtn = document.getElementById('ad-toggle-btn');
+  const triggerBtn = document.getElementById('ad-trigger-btn');
+  if (!toggleBtn) return;
+  toggleBtn.textContent = adsEnabled ? '🚫 Werbung stoppen' : '▶ Werbung aktivieren';
+  toggleBtn.classList.toggle('active', !adsEnabled);
+  triggerBtn.disabled = !adsEnabled;
+}
+
+// Shows the ad overlay for THIS client only — reacting to a broadcast is
+// per-client by nature (Agora delivers to whoever's currently connected),
+// and closing/paying is explicitly a per-player action even though the
+// ad's appearance was a synced event (see the brief's Payment section).
+// The DM's own client never shows this at all (the simpler of the two
+// options the brief offered for GM handling — flagged here since it's a
+// UX preference, not a constraint, and easy to flip to an instant-free
+// overlay instead if that's ever preferred).
+function showAdOverlay(adIndex) {
+  if (isDM) return;
+  const entry = AD_LIBRARY[adIndex];
+  if (!entry) return;
+  closeAdOverlay(); // clear any stray previous state first
+
+  const wrap = document.getElementById('ad-overlay');
+  document.getElementById('ad-image').src = entry.image;
+  document.getElementById('ad-skip-hint').style.display = 'none';
+  wrap.style.display = 'block';
+
+  ensureACtx();
+  let gain = null, audioEl = null;
+  try {
+    audioEl = new Audio(entry.jingle);
+    // Flat/non-spatial path, same bypass wireAmbient() already uses for
+    // shared GM music — an ad jingle isn't coming from anywhere in the
+    // room, it's just playing.
+    const src = audioCtx.createMediaElementSource(audioEl);
+    gain = audioCtx.createGain();
+    gain.gain.value = forceMuted ? 0 : 0.8;
+    src.connect(gain); gain.connect(audioCtx.destination);
+    audioEl.play().catch(()=>{});
+  } catch(e) { console.warn('Werbe-Jingle konnte nicht abgespielt werden:', e); }
+
+  currentAd = { adIndex, startTime: performance.now(), audioEl, gain, duration: 20 }; // 20s fallback until real metadata loads
+  if (audioEl) {
+    audioEl.addEventListener('loadedmetadata', () => {
+      if (currentAd && currentAd.audioEl === audioEl && audioEl.duration) currentAd.duration = audioEl.duration;
+    });
+    audioEl.addEventListener('ended', () => {
+      // Reached the natural end before being skipped — closes itself, free.
+      if (currentAd && currentAd.audioEl === audioEl) closeAdOverlay();
+    });
+  }
+}
+
+// Called every animate() frame while an ad is showing — cheap (a few
+// property reads/writes), and needs to react smoothly as the decaying
+// price ticks down.
+function updateAdOverlay() {
+  if (!currentAd) return;
+  const elapsed = (performance.now() - currentAd.startTime) / 1000;
+  const hint = document.getElementById('ad-skip-hint');
+  if (elapsed < AD_NO_SKIP_S) {
+    hint.style.display = 'none';
+    return;
+  }
+  const remaining = Math.max(0, currentAd.duration - elapsed);
+  const decayWindow = Math.max(0.001, currentAd.duration - AD_NO_SKIP_S);
+  const priced = linkedCharId && mapSync.db; // fallback (no DB, or no character linked) skips free — see closeAdOverlay/skip handling below
+  currentAd.price = priced ? Math.round(AD_SKIP_BASELINE_ED * Math.min(1, remaining/decayWindow)) : 0;
+  hint.style.display = 'block';
+  hint.textContent = priced ? `X zum Überspringen — ${currentAd.price} ed` : 'X zum Überspringen — kostenlos';
+}
+
+// The actual skip action — bound to the X key (see the keydown handler),
+// not a click, since pointer lock leaves no visible cursor to click with
+// during normal play. `paid` distinguishes an actual skip (attempt
+// payment) from the DM's force-close / natural-end paths (never charge).
+async function skipAd() {
+  if (!currentAd || (performance.now() - currentAd.startTime)/1000 < AD_NO_SKIP_S) return;
+  const price = currentAd.price || 0;
+  if (price > 0 && linkedCharId && mapSync.db) {
+    try {
+      // transaction(), not a plain set/update — this is what avoids
+      // clobbering a concurrent GM edit or another simultaneous change
+      // to the same balance, per the brief. Clamped at 0, never blocks
+      // the skip if the player's short (a homebrew low-stakes trust
+      // model, not a hard paywall).
+      await mapSync.db.ref('campaign/characters/'+linkedCharId+'/eurodollar')
+        .transaction(cur => Math.max(0, (cur||0) - price));
+    } catch(e) { console.warn('Werbe-Skip-Zahlung fehlgeschlagen:', e); }
+  }
+  closeAdOverlay();
+}
+
+function closeAdOverlay() {
+  document.getElementById('ad-overlay').style.display = 'none';
+  if (currentAd) {
+    if (currentAd.audioEl) { try { currentAd.audioEl.pause(); currentAd.audioEl.currentTime = 0; } catch(_){} }
+    if (currentAd.gain) { try { currentAd.gain.disconnect(); } catch(_){} }
+  }
+  currentAd = null;
+}
+
+// Called wherever forceMuted changes (see setMicUI/the forceMute stream
+// handler) so the DM's mute-all button silences an in-progress ad too,
+// per the brief.
+function updateAdMuteState() {
+  if (currentAd?.gain) currentAd.gain.gain.setTargetAtTime(forceMuted ? 0 : 0.8, audioCtx?.currentTime||0, 0.05);
+}
+
 // ══════════ UI EVENTS ══════════
 // Prefill the optional CP_Phantom URL from last time, same convenience
 // convention as CP_Phantom's own 'cp_db_url' localStorage key — the field
@@ -2690,12 +3018,20 @@ try {
   if (savedDbUrl) document.getElementById('f-dburl').value = savedDbUrl;
 } catch(e) {}
 
+// Character picker — refreshed whenever the URL field is edited or the
+// GM-Zugang toggle flips (a DM never gets this picker at all).
+document.getElementById('f-dburl').addEventListener('blur', refreshCharacterPicker);
+document.getElementById('f-isdm').addEventListener('change', refreshCharacterPicker);
+
 document.getElementById('join-btn').addEventListener('click', async()=>{
   const appId=document.getElementById('f-appid').value.trim();
   const room=document.getElementById('f-room').value.trim();
   const token=document.getElementById('f-token').value.trim()||null;
   const dbUrl=document.getElementById('f-dburl').value.trim()||null;
   isDM=document.getElementById('f-isdm').checked;
+  // The DM never has a linked wallet in this system by design — only
+  // read the picker for a joining player.
+  linkedCharId = isDM ? null : (document.getElementById('f-charid').value || null);
   const name=isDM?'GM':'Runner';
   const err=document.getElementById('jerr');
   if(appId.length<16){err.textContent='Bitte gültige Agora App-ID eingeben.';return;}
@@ -2727,6 +3063,8 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
       document.getElementById('btn-music').style.display='flex';
       document.getElementById('sep-dm').style.display='block';
       renderRecentMaps(); renderRecentTokens();
+      updateAdsToggleUI();
+      startAdHourlyTimer();
     }
   }catch(e){
     console.error(e);
@@ -2768,6 +3106,24 @@ document.getElementById('mute-all-btn').addEventListener('click',async()=>{
   const b=document.getElementById('mute-all-btn');
   b.textContent = allMuted ? '🔊 Stummschaltung aufheben' : '🔇 Alle stummschalten';
   b.classList.toggle('active',allMuted);
+});
+
+document.getElementById('ad-trigger-btn').addEventListener('click', () => {
+  if (!adsEnabled) return; // button is visually disabled too, see updateAdsToggleUI — this is just a second guard
+  triggerAdBroadcast();
+});
+
+document.getElementById('ad-toggle-btn').addEventListener('click', async () => {
+  adsEnabled = !adsEnabled;
+  updateAdsToggleUI();
+  if (!adsEnabled) {
+    // "Stop any ads from showing" — also force-closes whatever's
+    // currently up for everyone, free, not just future triggers.
+    try {
+      await agoraClient?.sendStreamMessage(
+        new TextEncoder().encode(JSON.stringify({type:'adForceClose', ts:Date.now()})), true);
+    } catch(e) { console.warn('ad force-close broadcast failed:', e); }
+  }
 });
 
 document.getElementById('btn-cam').addEventListener('click',async()=>{
