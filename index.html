@@ -326,11 +326,11 @@ const AD_LIBRARY = [
   { image: 'ads/moodpatch.png', jingle: 'ads/moodpatch.wav', name: 'MOODPATCH' },
   { image: 'ads/penthouse.png', jingle: 'ads/penthouse.wav', name: 'Arasaka Real Estate' },
 ];
-const BILLBOARD_HOLD_S = 14;  // seconds each billboard ad stays up
-const BILLBOARD_FADE_S = 2.5; // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
+const BILLBOARD_HOLD_S = 5*60; // seconds each billboard ad stays up — slow on purpose, this is background scenery for an 8-hour session, not something that should keep grabbing attention
+const BILLBOARD_FADE_S = 3;    // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
 const AD_NO_SKIP_S     = 5;   // seconds before a skip option appears at all — the joke is that it's genuinely unskippable at first
 const AD_DURATION_S    = 20;  // total ad length — a fixed constant rather than the jingle audio's own real length, since a short placeholder sting shouldn't cut the ad (and its price decay) short; the jingle loops underneath for the full duration instead
-const AD_SKIP_BASELINE_ED = 50; // eurodollar cost to skip the instant skipping becomes possible, decaying to 0 as the ad's remaining runtime elapses — tune freely, no design math behind this number
+const AD_SKIP_BASELINE_ED = 20; // eurodollar cost to skip the instant skipping becomes possible (at AD_NO_SKIP_S), stepping down by exactly 1 ed per whole second after that — not a smooth interpolation, a literal per-second countdown
 const AD_HOUR_MS = 60*60*1000; // automatic trigger interval
 
 // ══════════ PALETTE ══════════
@@ -2952,10 +2952,13 @@ function updateAdOverlay() {
     hint.style.display = 'none';
     return;
   }
-  const remaining = AD_DURATION_S - elapsed;
-  const decayWindow = AD_DURATION_S - AD_NO_SKIP_S;
+  // Stepped, not smooth: AD_SKIP_BASELINE_ED the instant skipping becomes
+  // possible, then exactly 1 ed less per whole second after that — a
+  // literal countdown a player can track at a glance, not a continuously
+  // interpolated number.
+  const secondsSkippable = Math.floor(elapsed - AD_NO_SKIP_S);
   const priced = linkedCharId && mapSync.db; // fallback (no DB, or no character linked) skips free — see closeAdOverlay/skip handling below
-  currentAd.price = priced ? Math.round(AD_SKIP_BASELINE_ED * Math.min(1, remaining/decayWindow)) : 0;
+  currentAd.price = priced ? Math.max(0, AD_SKIP_BASELINE_ED - secondsSkippable) : 0;
   hint.style.display = 'block';
   hint.textContent = priced ? `X zum Überspringen — ${currentAd.price} ed` : 'X zum Überspringen — kostenlos';
 }
