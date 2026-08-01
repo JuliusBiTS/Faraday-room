@@ -319,12 +319,45 @@ const SECRET_ROOM_D  = 2.5;  // hidden side room depth
 
 // ══════════ ADS ══════════
 // Shared by the passive south-wall billboard (image only) and the full
-// ad-interruption system (image + jingle). Two placeholders now — drop
-// more image+jingle pairs into ads/ and add an entry here to expand the
-// library later; both systems just pick randomly from whatever's here.
+// ad-interruption system (image + jingle). Drop more image+jingle pairs
+// into ads/ and add an entry here to expand the library later; both
+// systems just pick randomly from whatever's here. Jingle paths below
+// follow the same-basename convention (e.g. "Air.png" + "Air.wav") even
+// for ads that don't have one yet — showAdOverlay() already handles a
+// missing jingle file gracefully (silent ad, no error), so a jingle can
+// be dropped in later with zero code changes once it exists.
 const AD_LIBRARY = [
   { image: 'ads/moodpatch.png', jingle: 'ads/moodpatch.wav', name: 'MOODPATCH' },
   { image: 'ads/penthouse.png', jingle: 'ads/penthouse.wav', name: 'Arasaka Real Estate' },
+  { image: 'ads/Air.png', jingle: 'ads/Air.wav', name: 'Air' },
+  { image: 'ads/Arasaka.png', jingle: 'ads/Arasaka.wav', name: 'Arasaka' },
+  { image: 'ads/BD.png', jingle: 'ads/BD.wav', name: 'BD' },
+  { image: 'ads/Banking.png', jingle: 'ads/Banking.wav', name: 'Banking' },
+  { image: 'ads/Biotechnica.png', jingle: 'ads/Biotechnica.wav', name: 'Biotechnica' },
+  { image: 'ads/Dead Internet.png', jingle: 'ads/Dead Internet.wav', name: 'Dead Internet' },
+  { image: 'ads/Face upgrade.png', jingle: 'ads/Face upgrade.wav', name: 'Face Upgrade' },
+  { image: 'ads/Girlfriend.png', jingle: 'ads/Girlfriend.wav', name: 'Girlfriend' },
+  { image: 'ads/Grocery.png', jingle: 'ads/Grocery.wav', name: 'Grocery' },
+  { image: 'ads/Homeoffice.png', jingle: 'ads/Homeoffice.wav', name: 'Homeoffice' },
+  { image: 'ads/Kink.png', jingle: 'ads/Kink.wav', name: 'Kink' },
+  { image: 'ads/Kisslock.png', jingle: 'ads/Kisslock.wav', name: 'Kisslock' },
+  { image: 'ads/MaxTac 000.png', jingle: 'ads/MaxTac 000.wav', name: 'MaxTac' },
+  { image: 'ads/Memory.png', jingle: 'ads/Memory.wav', name: 'Memory' },
+  { image: 'ads/Militech.png', jingle: 'ads/Militech.wav', name: 'Militech' },
+  { image: 'ads/Pet.png', jingle: 'ads/Pet.wav', name: 'Pet' },
+  { image: 'ads/Protest.png', jingle: 'ads/Protest.wav', name: 'Protest' },
+  { image: 'ads/RealWater.png', jingle: 'ads/RealWater.wav', name: 'RealWater' },
+  { image: 'ads/Relatives.png', jingle: 'ads/Relatives.wav', name: 'Relatives' },
+  { image: 'ads/Sleep Chip.png', jingle: 'ads/Sleep Chip.wav', name: 'Sleep Chip' },
+  { image: 'ads/Smartgun.png', jingle: 'ads/Smartgun.wav', name: 'Smartgun' },
+  { image: 'ads/Surge Drink.png', jingle: 'ads/Surge Drink.wav', name: 'Surge Drink' },
+  { image: 'ads/Trauma Content.png', jingle: 'ads/Trauma Content.wav', name: 'Trauma Content' },
+  { image: 'ads/Trauma Team.png', jingle: 'ads/Trauma Team.wav', name: 'Trauma Team' },
+  { image: 'ads/Trust.png', jingle: 'ads/Trust.wav', name: 'Trust' },
+  { image: 'ads/car ad.png', jingle: 'ads/car ad.wav', name: 'Car Ad' },
+  { image: 'ads/escape.png', jingle: 'ads/escape.wav', name: 'Escape' },
+  { image: 'ads/friend.png', jingle: 'ads/friend.wav', name: 'Friend' },
+  { image: 'ads/workfriend.png', jingle: 'ads/workfriend.wav', name: 'Workfriend' },
 ];
 const BILLBOARD_HOLD_S = 5*60; // seconds each billboard ad stays up — slow on purpose, this is background scenery for an 8-hour session, not something that should keep grabbing attention
 const BILLBOARD_FADE_S = 3;    // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
