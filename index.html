@@ -355,11 +355,28 @@ const TOKEN_COMPANION = AMBER;
 const TOKEN_ENEMY = RED;
 const TOKEN_PLAYER = CYAN;
 
+// Alarm-ambiance accent colors — CP_Phantom's own alarmLevel (0-3: Green/
+// Yellow/Orange/Red, GM-set via the book's §25.1 tracker, already synced
+// through the existing map connection) drives a smooth blend from the
+// room's normal palette toward these on rising alert, plus a rotating
+// red beacon that only engages from Orange upward. Predefined THREE.Color
+// objects, reused every frame via .lerpColors() rather than allocated
+// fresh each frame.
+const ALARM_BASE_AMBIENT_COLOR = new THREE.Color(0x0d1114);
+const ALARM_ALERT_AMBIENT_COLOR = new THREE.Color(0x2a0806);
+const ALARM_BASE_CEIL_COLOR = new THREE.Color(0xcfe8ec);
+const ALARM_ALERT_CEIL_COLOR = new THREE.Color(0xff2200);
+const ALARM_BASE_REACTOR_COLOR = new THREE.Color(AMBER);
+const ALARM_ALERT_REACTOR_COLOR = new THREE.Color(0xff2200);
+const ALARM_TRANSITION_S = 2.5; // seconds to smoothly interpolate the displayed level toward the real one — a level change never pops
+
 // ══════════ THREE STATE ══════════
 let renderer, scene, camera, clock;
 let particleMesh, vaporMesh;
 let ambientLight, ceilingLightA, ceilingLightB, reactorLight;
 let reactorGlowMesh;
+let alarmLevelDisplayed = 0; // smoothly-interpolated 0-3 float, see updateAlarmAmbiance
+let alarmBeaconGroup, alarmBeaconMesh, alarmBeaconLight;
 let doorWallInfo; // east-wall doorway to the hidden side room — used for the movement passage and the audio-isolation boundary
 let tacticalView = false; // fixed bird's-eye camera over the table, for precise token placement
 
@@ -513,6 +530,7 @@ function initScene() {
 
   ceilingLightA = new THREE.PointLight(0xcfe8ec, 0.55, 8); ceilingLightA.position.set(1.4,WALL_H+CEIL_CLEAR-0.1,-1.0); scene.add(ceilingLightA);
   ceilingLightB = new THREE.PointLight(0xcfe8ec, 0.5, 8);  ceilingLightB.position.set(-1.4,WALL_H+CEIL_CLEAR-0.1,1.2); scene.add(ceilingLightB);
+  buildAlarmBeacon();
 
   doorWallInfo = octWallDefs()[2]; // east wall — doubles as the hidden passage behind the archive
   buildRoom();
@@ -1828,6 +1846,57 @@ function buildReactor(x,z,ry) {
 }
 let reactorCoreMesh;
 
+// Ceiling-mounted alarm beacon — dark and inert at Green/Yellow, only
+// spins up from Orange toward Red. A small emissive bulb + point light
+// offset from the group's own pivot so rotating the group sweeps light
+// around the room like a real klaxon beacon, rather than just pulsing
+// a static point in place.
+function buildAlarmBeacon() {
+  alarmBeaconGroup = new THREE.Group();
+  alarmBeaconGroup.position.set(0, WALL_H+CEIL_CLEAR-0.35, 0);
+  scene.add(alarmBeaconGroup);
+
+  alarmBeaconMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 12, 12),
+    new THREE.MeshStandardMaterial({color:0x2a0806, emissive:0xff2200, emissiveIntensity:0, roughness:0.4, metalness:0.3})
+  );
+  alarmBeaconMesh.position.set(0.5, 0, 0);
+  alarmBeaconGroup.add(alarmBeaconMesh);
+
+  alarmBeaconLight = new THREE.PointLight(0xff2200, 0, 5);
+  alarmBeaconLight.position.set(0.5, 0, 0);
+  alarmBeaconGroup.add(alarmBeaconLight);
+}
+
+// Blends the room toward a stressed red-alert state as CP_Phantom's own
+// GM-set alarmLevel (0-3, synced via mapSync) rises — smoothly, never a
+// hard pop. The rotating beacon + its flicker only engage from Orange(2)
+// upward, and the flicker's fastest component sits around 1.2Hz, well
+// under typical photosensitive-strobe thresholds (~3Hz+) — the one
+// deliberate exception to the room's normal no-flicker rule, explicitly
+// requested for red-alert tension. No audio component, by request.
+function updateAlarmAmbiance(dt) {
+  const targetLevel = Math.max(0, Math.min(3, mapSync.campaign?.alarmLevel ?? 0));
+  alarmLevelDisplayed += (targetLevel - alarmLevelDisplayed) * Math.min(1, dt/ALARM_TRANSITION_S);
+
+  const t = alarmLevelDisplayed/3; // 0..1 across the whole Green..Red range
+  if (ambientLight) ambientLight.color.lerpColors(ALARM_BASE_AMBIENT_COLOR, ALARM_ALERT_AMBIENT_COLOR, t);
+  if (ceilingLightA) ceilingLightA.color.lerpColors(ALARM_BASE_CEIL_COLOR, ALARM_ALERT_CEIL_COLOR, t);
+  if (ceilingLightB) ceilingLightB.color.lerpColors(ALARM_BASE_CEIL_COLOR, ALARM_ALERT_CEIL_COLOR, t);
+  if (reactorLight) reactorLight.color.lerpColors(ALARM_BASE_REACTOR_COLOR, ALARM_ALERT_REACTOR_COLOR, t);
+
+  // beacon: 0 below Orange, ramps 0..1 from Orange(2) to Red(3)
+  const beaconT = Math.max(0, Math.min(1, alarmLevelDisplayed-2));
+  if (alarmBeaconGroup) {
+    alarmBeaconGroup.rotation.y += dt * (0.3 + beaconT*2.2);
+    if (alarmBeaconLight) {
+      const flicker = Math.max(0, 1.6 + 0.9*Math.sin(_t*7.54) + 0.5*Math.sin(_t*4.4+1.3));
+      alarmBeaconLight.intensity = beaconT * flicker;
+    }
+    if (alarmBeaconMesh) alarmBeaconMesh.material.emissiveIntensity = beaconT * 2.2;
+  }
+}
+
 // South wall — the sealed entrance: a blast door / freight-elevator slab
 // with amber warning-strip trim, now mostly given over to the billboard
 // (see buildBillboard) — the door's own status readout and center seam
@@ -2526,6 +2595,7 @@ function animate() {
   if(ceilingLightA) ceilingLightA.intensity = 0.55 + Math.sin(_t*0.4)*0.05;
   if(ceilingLightB) ceilingLightB.intensity = 0.5 + Math.sin(_t*0.4+2)*0.05;
 
+  updateAlarmAmbiance(dt);
   updateBillboard(dt);
   updateAdOverlay();
 
