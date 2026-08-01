@@ -3065,6 +3065,18 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
       renderRecentMaps(); renderRecentTokens();
       updateAdsToggleUI();
       startAdHourlyTimer();
+    } else if (new URLSearchParams(location.search).get('testad') === '1') {
+      // DEBUG/TESTING ONLY, opt-in via ?testad=1 in the URL — self-triggers
+      // a local ad 30s after joining as a player, so the player-side
+      // experience (unskippable window, price decay, X-to-skip, a real
+      // eurodollar deduction if a character is linked) can be tried solo,
+      // without a second session to act as the DM broadcasting one. Never
+      // touches the Agora broadcast channel and never fires without the
+      // query param or for the DM, so it can't accidentally engage during
+      // a real session — just calls the exact same showAdOverlay() a real
+      // broadcast would.
+      console.info('Testmodus: ?testad=1 aktiv — Werbung erscheint in 30s automatisch.');
+      setTimeout(() => showAdOverlay(Math.floor(Math.random()*AD_LIBRARY.length)), 30000);
     }
   }catch(e){
     console.error(e);
