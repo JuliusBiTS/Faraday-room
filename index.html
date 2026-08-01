@@ -122,10 +122,10 @@ body.locked #crosshair{opacity:1}
 /* Ad overlay — deliberately garish (hot magenta) against the room's own
    muted cyan/amber palette; the visual clash IS the joke, a burst of
    loud corporate junk breaking into an otherwise minimalist room. */
-#ad-overlay{position:fixed;left:50%;bottom:110px;transform:translateX(-50%);width:440px;background:#000;border:3px solid #ff2f9e;box-shadow:0 0 40px rgba(255,47,158,.5),0 8px 30px rgba(0,0,0,.7);z-index:220;pointer-events:none}
+#ad-overlay{position:fixed;left:50%;bottom:130px;transform:translateX(-50%);width:70vw;max-width:820px;min-width:520px;background:#000;border:4px solid #ff2f9e;box-shadow:0 0 60px rgba(255,47,158,.55),0 10px 40px rgba(0,0,0,.75);z-index:220;pointer-events:none}
 #ad-image{width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#0a0a0a}
-#ad-label{position:absolute;top:8px;left:8px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:10px;font-weight:bold;letter-spacing:3px;text-transform:uppercase;padding:4px 10px}
-#ad-skip-hint{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:11px;letter-spacing:1px;text-transform:uppercase;padding:5px 10px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
+#ad-label{position:absolute;top:10px;left:10px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:13px;font-weight:bold;letter-spacing:4px;text-transform:uppercase;padding:5px 14px}
+#ad-skip-hint{position:absolute;bottom:10px;right:10px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:16px;letter-spacing:1px;text-transform:uppercase;padding:8px 16px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
 
 canvas{display:block}
 </style>
@@ -329,6 +329,7 @@ const AD_LIBRARY = [
 const BILLBOARD_HOLD_S = 14;  // seconds each billboard ad stays up
 const BILLBOARD_FADE_S = 2.5; // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
 const AD_NO_SKIP_S     = 5;   // seconds before a skip option appears at all — the joke is that it's genuinely unskippable at first
+const AD_DURATION_S    = 20;  // total ad length — a fixed constant rather than the jingle audio's own real length, since a short placeholder sting shouldn't cut the ad (and its price decay) short; the jingle loops underneath for the full duration instead
 const AD_SKIP_BASELINE_ED = 50; // eurodollar cost to skip the instant skipping becomes possible, decaying to 0 as the ad's remaining runtime elapses — tune freely, no design math behind this number
 const AD_HOUR_MS = 60*60*1000; // automatic trigger interval
 
@@ -1828,17 +1829,16 @@ function buildReactor(x,z,ry) {
 let reactorCoreMesh;
 
 // South wall — the sealed entrance: a blast door / freight-elevator slab
-// with amber warning-strip trim. It "locks" once, right after join (a
-// one-time texture swap on the status placard, not a repeating animation) —
-// that's the narrative reason this stays a single enclosed chamber.
+// with amber warning-strip trim, now mostly given over to the billboard
+// (see buildBillboard) — the door's own status readout and center seam
+// were dropped since the billboard dominates this wall and both read as
+// visual clutter competing with it rather than framing it.
 function buildBlastDoor() {
   const w = octWallDefs()[4]; // south, main wall
   const nx=Math.sin(w.ry), nz=Math.cos(w.ry);
 
   const slab=new THREE.Mesh(new THREE.PlaneGeometry(w.width-0.05, WALL_H*0.92), mat(0x1e2226,0,0,0.6,0.35));
   slab.position.set(w.mid[0],WALL_H*0.46,w.mid[1]); slab.rotation.y=w.ry; scene.add(slab);
-  const centerSeam=new THREE.Mesh(new THREE.BoxGeometry(0.04,WALL_H*0.92,0.05),mat(STEEL,0,0,0.5,0.4));
-  centerSeam.position.set(w.mid[0]+nx*0.03,WALL_H*0.46,w.mid[1]+nz*0.03); centerSeam.rotation.y=w.ry; scene.add(centerSeam);
 
   [-1,1].forEach(side=>{
     const stripe=new THREE.Mesh(new THREE.BoxGeometry(w.width-0.3,0.06,0.04),mat(AMBER,AMBER,1.1));
@@ -1848,23 +1848,6 @@ function buildBlastDoor() {
     const rivet=new THREE.Mesh(new THREE.SphereGeometry(0.03,8,8),mat(STEEL,0,0,0.4,0.5));
     rivet.position.set(w.mid[0]+i*(w.width/2-0.15)+nx*0.05,WALL_H*0.7,w.mid[1]+nz*0.05); scene.add(rivet);
   }
-
-  // status placard — swaps from an unlocked green readout to a sealed
-  // amber/red one a couple of seconds after the scene loads, exactly once
-  const pc=document.createElement('canvas'); pc.width=260; pc.height=80;
-  const drawPlacard=(locked)=>{
-    const ctx=pc.getContext('2d');
-    ctx.fillStyle='#0a0c0e'; ctx.fillRect(0,0,260,80);
-    ctx.strokeStyle=locked?'rgba(217,138,61,0.8)':'rgba(62,207,110,0.8)'; ctx.lineWidth=2; ctx.strokeRect(3,3,254,74);
-    ctx.fillStyle=locked?'#d98a3d':'#3ecf6e'; ctx.font='bold 20px "Share Tech Mono",monospace'; ctx.textAlign='center';
-    ctx.fillText(locked?'SEALED':'UNLOCKED', 130, 46);
-  };
-  drawPlacard(false);
-  const placardOffset = new THREE.Vector3(0,0,0.04).applyEuler(new THREE.Euler(0,w.ry,0));
-  const placard=new THREE.Mesh(new THREE.PlaneGeometry(0.65,0.2),
-    new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(pc)}));
-  placard.position.set(w.mid[0]+placardOffset.x,1.9,w.mid[1]+placardOffset.z); placard.rotation.y=w.ry; scene.add(placard);
-  setTimeout(()=>{ drawPlacard(true); placard.material.map.needsUpdate=true; }, 1800);
 
   buildBillboard(w);
 }
@@ -1883,14 +1866,18 @@ let billboardImages = [];
 let billboardIndex = 0;
 let billboardElapsed = 0;
 function buildBillboard(w) {
-  const BW = 2.6, BH = 1.2, by = 1.15;
+  // Sized to fill almost the entire door between the two warning stripes
+  // (at WALL_H*0.46 ± WALL_H*0.32) and nearly the door's full width,
+  // clearing the corner rivets — this is meant to dominate the wall, not
+  // decorate a corner of it.
+  const BW = w.width - 0.5, BH = WALL_H*0.56, by = WALL_H*0.46;
   const frame = new THREE.Mesh(new THREE.BoxGeometry(BW+0.12,BH+0.12,0.05),mat(GLASS,0,0,0.5,0.3));
   frame.position.set(w.mid[0],by,w.mid[1]); frame.rotation.y=w.ry; scene.add(frame);
   const edge = new THREE.Mesh(new THREE.BoxGeometry(BW+0.18,BH+0.18,0.025),mat(0xff2f9e,0xff2f9e,1.1));
   edge.position.set(w.mid[0],by,w.mid[1]); edge.rotation.y=w.ry; scene.add(edge);
 
   billboardCanvas = document.createElement('canvas');
-  billboardCanvas.width = 900; billboardCanvas.height = Math.round(900*(BH/BW));
+  billboardCanvas.width = 1400; billboardCanvas.height = Math.round(1400*(BH/BW));
   billboardCtx = billboardCanvas.getContext('2d');
   billboardCtx.fillStyle='#050505'; billboardCtx.fillRect(0,0,billboardCanvas.width,billboardCanvas.height);
   billboardTexture = new THREE.CanvasTexture(billboardCanvas);
@@ -2931,6 +2918,11 @@ function showAdOverlay(adIndex) {
   let gain = null, audioEl = null;
   try {
     audioEl = new Audio(entry.jingle);
+    // Loops for the ad's full fixed duration (see AD_DURATION_S) rather
+    // than playing once — a real jingle might be produced to roughly
+    // match, but these placeholder stings are only a couple of seconds,
+    // and a 20s "ad" going silent after 2s would feel broken, not funny.
+    audioEl.loop = true;
     // Flat/non-spatial path, same bypass wireAmbient() already uses for
     // shared GM music — an ad jingle isn't coming from anywhere in the
     // room, it's just playing.
@@ -2941,31 +2933,27 @@ function showAdOverlay(adIndex) {
     audioEl.play().catch(()=>{});
   } catch(e) { console.warn('Werbe-Jingle konnte nicht abgespielt werden:', e); }
 
-  currentAd = { adIndex, startTime: performance.now(), audioEl, gain, duration: 20 }; // 20s fallback until real metadata loads
-  if (audioEl) {
-    audioEl.addEventListener('loadedmetadata', () => {
-      if (currentAd && currentAd.audioEl === audioEl && audioEl.duration) currentAd.duration = audioEl.duration;
-    });
-    audioEl.addEventListener('ended', () => {
-      // Reached the natural end before being skipped — closes itself, free.
-      if (currentAd && currentAd.audioEl === audioEl) closeAdOverlay();
-    });
-  }
+  currentAd = { adIndex, startTime: performance.now(), audioEl, gain };
 }
 
 // Called every animate() frame while an ad is showing — cheap (a few
 // property reads/writes), and needs to react smoothly as the decaying
-// price ticks down.
+// price ticks down. Also owns the natural-end check: AD_DURATION_S is a
+// fixed constant (not tied to the jingle's own real length — see
+// showAdOverlay), so "did the ad finish" is a plain elapsed-time check
+// here rather than waiting on the (looping, so it never fires) audio
+// 'ended' event.
 function updateAdOverlay() {
   if (!currentAd) return;
   const elapsed = (performance.now() - currentAd.startTime) / 1000;
+  if (elapsed >= AD_DURATION_S) { closeAdOverlay(); return; } // reached the end before being skipped — free, no transaction
   const hint = document.getElementById('ad-skip-hint');
   if (elapsed < AD_NO_SKIP_S) {
     hint.style.display = 'none';
     return;
   }
-  const remaining = Math.max(0, currentAd.duration - elapsed);
-  const decayWindow = Math.max(0.001, currentAd.duration - AD_NO_SKIP_S);
+  const remaining = AD_DURATION_S - elapsed;
+  const decayWindow = AD_DURATION_S - AD_NO_SKIP_S;
   const priced = linkedCharId && mapSync.db; // fallback (no DB, or no character linked) skips free — see closeAdOverlay/skip handling below
   currentAd.price = priced ? Math.round(AD_SKIP_BASELINE_ED * Math.min(1, remaining/decayWindow)) : 0;
   hint.style.display = 'block';
@@ -3019,7 +3007,16 @@ try {
 } catch(e) {}
 
 // Character picker — refreshed whenever the URL field is edited or the
-// GM-Zugang toggle flips (a DM never gets this picker at all).
+// GM-Zugang toggle flips (a DM never gets this picker at all). Debounced
+// on 'input' (not just 'blur') so pasting the URL and going straight for
+// VERBINDEN without ever clicking away from the field still populates
+// it — relying on blur alone meant it silently never appeared unless you
+// happened to tab or click elsewhere first.
+let charPickerDebounce = null;
+document.getElementById('f-dburl').addEventListener('input', () => {
+  clearTimeout(charPickerDebounce);
+  charPickerDebounce = setTimeout(refreshCharacterPicker, 600);
+});
 document.getElementById('f-dburl').addEventListener('blur', refreshCharacterPicker);
 document.getElementById('f-isdm').addEventListener('change', refreshCharacterPicker);
 
@@ -3075,8 +3072,8 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
       // query param or for the DM, so it can't accidentally engage during
       // a real session — just calls the exact same showAdOverlay() a real
       // broadcast would.
-      console.info('Testmodus: ?testad=1 aktiv — Werbung erscheint in 30s automatisch.');
-      setTimeout(() => showAdOverlay(Math.floor(Math.random()*AD_LIBRARY.length)), 30000);
+      console.info('Testmodus: ?testad=1 aktiv — Werbung erscheint in 10s automatisch.');
+      setTimeout(() => showAdOverlay(Math.floor(Math.random()*AD_LIBRARY.length)), 10000);
     }
   }catch(e){
     console.error(e);
