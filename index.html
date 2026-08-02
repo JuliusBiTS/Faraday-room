@@ -127,6 +127,18 @@ body.locked #crosshair{opacity:1}
 #ad-label{position:absolute;top:10px;left:10px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:13px;font-weight:bold;letter-spacing:4px;text-transform:uppercase;padding:5px 14px}
 #ad-skip-hint{position:absolute;bottom:10px;right:10px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:16px;letter-spacing:1px;text-transform:uppercase;padding:8px 16px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
 
+/* Portrait reveal — slides in from off-screen-left to flush against the
+   left edge, holds, then slides back out. Border/glow color is set
+   per-reveal in JS (allegiance color — see showPortraitReveal), the base
+   cyan below is just the pre-reveal/fallback tone. */
+#portrait-reveal-panel{position:fixed;top:50%;left:0;transform:translate(-115%,-50%);width:260px;background:var(--card);border:2px solid var(--c);border-left:none;box-shadow:0 0 40px rgba(47,216,232,.35),0 6px 30px rgba(0,0,0,.7);z-index:210;pointer-events:none;transition:transform .8s cubic-bezier(.16,.84,.44,1);padding:16px}
+#portrait-reveal-panel.show{transform:translate(0,-50%)}
+#pr-portrait{width:100%;aspect-ratio:1/1;background:#0a0a0a;border:1px solid rgba(47,216,232,.25);display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:12px}
+#pr-img{width:100%;height:100%;object-fit:cover}
+#pr-initials{font-family:var(--fd);font-size:44px;font-weight:900;display:flex}
+#pr-name{font-family:var(--fd);font-size:14px;font-weight:700;letter-spacing:3px;text-transform:uppercase;text-align:center;text-shadow:0 0 14px rgba(47,216,232,.5)}
+#pr-flavor{font-size:10px;letter-spacing:.3px;color:rgba(47,216,232,.65);line-height:1.7;margin-top:8px;font-style:italic;max-height:110px;overflow:hidden}
+
 canvas{display:block}
 </style>
 </head>
@@ -290,6 +302,21 @@ canvas{display:block}
   <div id="ad-skip-hint" style="display:none">X zum Überspringen</div>
 </div>
 
+<!-- Portrait reveal — GM-triggered via CP_Phantom's own "Reveal to
+     Players" button (campaign.portraitReveal:{charId,ts}); slides in from
+     the left, holds for PORTRAIT_REVEAL_HOLD_S, then slides back off (see
+     showPortraitReveal). Non-blocking (pointer-events:none, same
+     convention as #ad-overlay) so WASD/mouselook keep working underneath;
+     never needs a dismiss control. Player-only. -->
+<div id="portrait-reveal-panel">
+  <div id="pr-portrait">
+    <img id="pr-img" src="" style="display:none"/>
+    <div id="pr-initials"></div>
+  </div>
+  <div id="pr-name"></div>
+  <div id="pr-flavor"></div>
+</div>
+
 <script>
 'use strict';
 
@@ -406,6 +433,8 @@ const ALARM_ALERT_CEIL_COLOR = new THREE.Color(0xff2200);
 const ALARM_BASE_REACTOR_COLOR = new THREE.Color(AMBER);
 const ALARM_ALERT_REACTOR_COLOR = new THREE.Color(0xff2200);
 const ALARM_TRANSITION_S = 2.5; // seconds to smoothly interpolate the displayed level toward the real one — a level change never pops
+
+const PORTRAIT_REVEAL_HOLD_S = 30; // seconds the GM's "reveal to players" slide-in panel stays visible before sliding back off — see showPortraitReveal
 
 // ══════════ THREE STATE ══════════
 let renderer, scene, camera, clock;
@@ -828,6 +857,7 @@ const mapSync = {
   pulse: null,               // {x,y,startTime} while a ping pulse is animating
   lastNetPingTs: undefined,  // same skip-first-sync convention, for the netrunner's Ping-hack network-reveal sweep
   netSweep: null,            // {x,y,startTime} while a one-shot Ping-hack sweep is animating
+  lastPortraitRevealTs: undefined, // same skip-first-sync convention, for the GM's "Reveal to Players" broadcast — see showPortraitReveal
   redrawTimer: null,
   portraits: {},             // { charId: <img>|null }, decoded from the SAME 'portraits/{id}' node CP_Phantom itself listens on
   portraitListeners: new Set(), // ids we've already attached a listener for — mirrors CP_Phantom's own portraitListeners Set, so a token seen on every redraw tick doesn't re-attach a listener 12x/sec
@@ -922,6 +952,17 @@ function initMapSync(dbUrl) {
       }
     } else if (mapSync.lastNetPingTs === undefined) {
       mapSync.lastNetPingTs = null;
+    }
+    // Same skip-first-sync rule, for the GM's "Reveal to Players" broadcast
+    // (see showPortraitReveal) — fires once per NEW reveal (ts changed),
+    // never on the initial sync after login/reload.
+    const reveal = mapSync.campaign?.portraitReveal;
+    if (reveal && reveal.ts !== mapSync.lastPortraitRevealTs) {
+      const isFirstReveal = mapSync.lastPortraitRevealTs === undefined;
+      mapSync.lastPortraitRevealTs = reveal.ts;
+      if (!isFirstReveal) showPortraitReveal(reveal.charId);
+    } else if (mapSync.lastPortraitRevealTs === undefined) {
+      mapSync.lastPortraitRevealTs = null;
     }
   }, err => {
     // Permission-denied / bad URL / offline all land here — logged once
@@ -1096,6 +1137,68 @@ function mapSyncEnsurePortraitListener(id) {
   }, err => {
     console.warn('CP_Phantom map sync (portrait for '+id+') failed — falling back to initials:', err.message);
   });
+}
+
+// GM's "Reveal to Players" broadcast (CP_Phantom's own campaign.
+// portraitReveal:{charId,ts}, triggered from its dossier's 📢 REVEAL TO
+// PLAYERS button), mirrored here as a non-blocking slide-in panel from
+// the left edge rather than CP_Phantom's own fullscreen tap-to-dismiss
+// modal — a blocking modal would fight pointer-lock movement in a first-
+// person room, so this auto-dismisses after PORTRAIT_REVEAL_HOLD_S
+// instead. Player-only, same role gate CP_Phantom's own
+// showPortraitRevealOverlay uses (the GM already has the source tool
+// open, no need to also show it on their own client here). Fetches the
+// FULL (uncropped) portrait one-off via .once() rather than a persistent
+// listener — this is a one-shot event, not a per-frame map-token draw.
+let portraitRevealActiveId = null;
+let portraitRevealHideTimer = null;
+function showPortraitReveal(charId) {
+  if (isDM) return;
+  const c = mapSync.campaign?.characters?.[charId];
+  if (!c) return;
+  const panel = document.getElementById('portrait-reveal-panel');
+  if (!panel) return;
+  portraitRevealActiveId = charId;
+
+  // Same allegiance-color rule as the map tokens themselves (see
+  // drawTokens) — companion blue, ally green, NPC/enemy red, otherwise
+  // (a PC) the room's own cyan.
+  const color = c.isCompanion ? MAPSYNC_TOK_BLUE : (c.isAlly ? MAPSYNC_TOK_GREEN : (c.isNPC ? MAPSYNC_TOK_RED : MAPSYNC_TOK_CYAN));
+  panel.style.borderColor = color;
+  panel.style.boxShadow = `0 0 40px ${color}55, 0 6px 30px rgba(0,0,0,.7)`;
+
+  const nameEl = document.getElementById('pr-name');
+  nameEl.textContent = c.name || '???';
+  nameEl.style.color = color;
+  const flavorEl = document.getElementById('pr-flavor');
+  flavorEl.textContent = c.flavor || '';
+  flavorEl.style.display = c.flavor ? 'block' : 'none';
+
+  const imgEl = document.getElementById('pr-img');
+  const initialsEl = document.getElementById('pr-initials');
+  imgEl.style.display = 'none';
+  initialsEl.style.display = 'flex';
+  initialsEl.style.color = color;
+  initialsEl.textContent = (c.name || '?').slice(0,2).toUpperCase();
+
+  if (mapSync.db) {
+    mapSync.db.ref('portraits/' + charId).once('value').then(snap => {
+      // A newer reveal may have superseded this one before the fetch
+      // resolved — real Firebase reads are async, don't let a slow one
+      // clobber whatever's on-screen now.
+      if (portraitRevealActiveId !== charId) return;
+      const val = snap.exists() ? snap.val() : null;
+      let url = val;
+      if (typeof val === 'string' && val.startsWith('{')) {
+        try { const parsed = JSON.parse(val); url = parsed.full ?? parsed.crop ?? null; } catch(e) { url = null; }
+      }
+      if (url) { imgEl.src = url; imgEl.style.display = 'block'; initialsEl.style.display = 'none'; }
+    }).catch(()=>{});
+  }
+
+  panel.classList.add('show');
+  clearTimeout(portraitRevealHideTimer);
+  portraitRevealHideTimer = setTimeout(() => panel.classList.remove('show'), PORTRAIT_REVEAL_HOLD_S * 1000);
 }
 
 let mapSyncFogCanvas=null, mapSyncFogCtx=null;
@@ -1993,6 +2096,10 @@ function buildBillboard(w) {
   screen.position.set(w.mid[0]+offset.x,by,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
 
   billboardImages = AD_LIBRARY.map(ad => { const img=new Image(); img.src=ad.image; return img; });
+  // Random start instead of always index 0 — otherwise every fresh scene
+  // load shows the same first ad (moodpatch) for a full BILLBOARD_HOLD_S
+  // before it ever gets a chance to cycle.
+  billboardIndex = Math.floor(Math.random() * billboardImages.length);
 }
 
 // Draws `img` centered and letterboxed (never distorted) into a W x H
@@ -2017,7 +2124,13 @@ function updateBillboard(dt) {
   ctx.fillStyle = '#050505'; ctx.fillRect(0,0,W,H);
   drawAdContain(ctx, billboardImages[billboardIndex], W, H, 1);
   if (billboardElapsed > BILLBOARD_HOLD_S) {
-    const nextIdx = (billboardIndex+1) % billboardImages.length;
+    // Random next pick (never repeating the current ad back-to-back)
+    // rather than a fixed sequential order — otherwise every session sees
+    // the exact same ad rotation in the exact same order.
+    let nextIdx = billboardIndex;
+    if (billboardImages.length > 1) {
+      while (nextIdx === billboardIndex) nextIdx = Math.floor(Math.random() * billboardImages.length);
+    }
     const fadeT = Math.min(1, (billboardElapsed-BILLBOARD_HOLD_S)/BILLBOARD_FADE_S);
     drawAdContain(ctx, billboardImages[nextIdx], W, H, fadeT);
     if (billboardElapsed > BILLBOARD_HOLD_S+BILLBOARD_FADE_S) {
