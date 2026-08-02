@@ -143,6 +143,17 @@ body.locked #crosshair{opacity:1}
 #pr-name{font-family:var(--fd);font-size:21px;font-weight:700;letter-spacing:3px;text-transform:uppercase;text-align:center;text-shadow:0 0 18px rgba(47,216,232,.5)}
 #pr-flavor{font-size:12.5px;letter-spacing:.3px;color:rgba(47,216,232,.7);line-height:1.75;margin-top:12px;font-style:italic;max-height:18vh;overflow:hidden}
 
+/* Banner ad — same garish-magenta-against-muted-palette joke as the full
+   #ad-overlay, just a classic 300x250 "MREC" web-banner shape bolted onto
+   the right edge instead of a center-screen takeover. Sits below the top
+   HUD bar (which runs ~70-90px tall), never overlaps #gm (players never
+   see this, the DM never sees it — mutually exclusive by role). */
+#banner-ad-panel{position:fixed;top:110px;right:0;transform:translateX(115%);width:300px;height:250px;background:#000;border:3px solid #ff2f9e;box-shadow:0 0 40px rgba(255,47,158,.5),0 6px 30px rgba(0,0,0,.7);z-index:210;pointer-events:none;transition:transform .7s cubic-bezier(.16,.84,.44,1);overflow:hidden}
+#banner-ad-panel.show{transform:translateX(0)}
+#banner-ad-img{width:100%;height:100%;object-fit:contain;background:#0a0a0a;display:block}
+#banner-ad-label{position:absolute;top:6px;left:6px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:9px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;padding:3px 8px}
+#banner-ad-skip-hint{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:11px;letter-spacing:.5px;text-transform:uppercase;padding:5px 9px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
+
 canvas{display:block}
 </style>
 </head>
@@ -321,6 +332,19 @@ canvas{display:block}
   <div id="pr-flavor"></div>
 </div>
 
+<!-- Banner ad — passive, right-edge slide-in counterpart to the full
+     ad-interruption overlay above: no jingle, ~10s life, never blocks
+     WASD/mouselook, fires on its own randomized ~15min timer rather than
+     the DM's manual/hourly trigger (see scheduleBannerAd). Same X-to-skip
+     mechanic as the full ad, just capped lower for its shorter life.
+     Player-only; also closed by the DM's "stop ads" kill switch, same as
+     the full overlay — the billboard is deliberately NOT part of this. -->
+<div id="banner-ad-panel">
+  <img id="banner-ad-img" src=""/>
+  <div id="banner-ad-label">WERBUNG</div>
+  <div id="banner-ad-skip-hint" style="display:none">X zum Überspringen</div>
+</div>
+
 <script>
 'use strict';
 
@@ -400,6 +424,16 @@ const AD_NO_SKIP_S     = 5;   // seconds before a skip option appears at all —
 const AD_DURATION_S    = 20;  // total ad length — a fixed constant rather than the jingle audio's own real length, since a short placeholder sting shouldn't cut the ad (and its price decay) short; the jingle loops underneath for the full duration instead
 const AD_SKIP_BASELINE_ED = 20; // eurodollar cost to skip the instant skipping becomes possible (at AD_NO_SKIP_S), stepping down by exactly 1 ed per whole second after that — not a smooth interpolation, a literal per-second countdown
 const AD_HOUR_MS = 60*60*1000; // automatic trigger interval
+
+// Banner ad — a smaller, passive "web ad bolted onto reality" that slides
+// in from the right edge on its own timer, unlike the full-attention
+// interruption above: no jingle, much shorter life, and never blocks
+// movement. Same skip-with-decaying-price mechanic as the full ad, just
+// scaled down for its 10s duration (see showBannerAd/updateBannerAd).
+const BANNER_AD_DURATION_S = 10;    // total time visible before auto-sliding back off
+const BANNER_AD_NO_SKIP_S  = 3;     // seconds before the skip option appears
+const BANNER_AD_SKIP_BASELINE_ED = 10; // eurodollar cost to skip the instant skipping becomes possible — half the full ad's, since this only lasts half as many "priced" seconds
+const BANNER_AD_INTERVAL_MS = 15*60*1000; // AVERAGE automatic interval, not a fixed clock — see scheduleBannerAd, which re-randomizes the delay every time so banners don't land on a predictable beat
 
 // ══════════ PALETTE ══════════
 // Deliberately few bright accent sources (reactor glow, the north holo-screen,
@@ -563,6 +597,9 @@ document.addEventListener('keydown', e => {
   // the two never actually compete for the same keypress).
   if (e.code === 'KeyX' && isLocked && currentAd) {
     skipAd();
+  }
+  if (e.code === 'KeyX' && isLocked && currentBannerAd) {
+    skipBannerAd();
   }
   if (e.code === 'KeyM' && isLocked && isDM) {
     document.getElementById('mute-all-btn').click();
@@ -2752,6 +2789,7 @@ function animate() {
   updateAlarmAmbiance(dt);
   updateBillboard(dt);
   updateAdOverlay();
+  updateBannerAd();
 
   renderer.render(scene,camera);
 }
@@ -2925,8 +2963,15 @@ async function initAgora(appId, room, myName, asDM, token) {
           showAdOverlay(msg.adIndex);
         }
       }
+      if(msg.type==='bannerAdTrigger'){
+        if(msg.ts!==lastBannerAdTriggerTs){
+          lastBannerAdTriggerTs=msg.ts;
+          showBannerAd(msg.adIndex);
+        }
+      }
       if(msg.type==='adForceClose'){
         closeAdOverlay(); // DM kill switch — free, no transaction, regardless of who was showing what
+        closeBannerAd(); // "stop ads" means all of them, not just the full-screen one — the billboard is deliberately NOT touched here, it's wall decor, not part of this system
       }
     }catch(e){ console.warn('stream-message parse failed:', e, 'from uid', uid); }
   });
@@ -3049,10 +3094,14 @@ async function toggleStream(){
 // too, via the same transaction()-based pattern reasoning applies to any
 // balance multiple clients could touch concurrently.
 
-let adsEnabled = true; // DM-only kill switch — gates BOTH the hourly timer and the manual trigger button; does not affect the passive billboard
+let adsEnabled = true; // DM-only kill switch — gates BOTH the hourly timer and the manual trigger button; does not affect the passive billboard. Also gates the banner-ad timer/broadcast and force-closes a showing banner (see the adForceClose stream handler) — "stop ads" means ALL of them, not just the full-screen one.
 let adHourTimer = null;
 let lastAdTriggerTs = undefined; // ephemeral broadcast, not Firebase-backed state — no "replay on join" risk the way mapPing/portraitReveal have, so no skip-first-sync convention needed here
 let currentAd = null; // {adIndex, startTime, audioEl, gain, duration} while an ad overlay is showing locally
+let bannerAdTimer = null;
+let lastBannerAdTriggerTs = undefined; // same ephemeral-broadcast reasoning as lastAdTriggerTs
+let currentBannerAd = null; // {adIndex, startTime, price} while the banner panel is showing locally
+let bannerAdHideTimer = null; // safety-net timeout that force-hides the panel even if updateBannerAd's own elapsed check is somehow never reached
 
 // One-off, throwaway read (NOT the persistent mapSync connection — that
 // only opens at actual room join) so the join screen can populate a
@@ -3224,6 +3273,88 @@ function updateAdMuteState() {
   if (currentAd?.gain) currentAd.gain.gain.setTargetAtTime(forceMuted ? 0 : 0.8, audioCtx?.currentTime||0, 0.05);
 }
 
+// ── Banner ad — passive, right-edge slide-in, no jingle ──
+// DM-authoritative, same reasoning as startAdHourlyTimer: only the DM's
+// own client schedules and broadcasts these, so there's one source of
+// truth and no risk of every client independently deciding to fire one.
+// Re-randomizes its own delay after every firing (rather than a flat
+// setInterval like the full ad's hourly timer) so "roughly once every 15
+// min" reads as an average cadence, not a metronome players can predict.
+function scheduleBannerAd() {
+  clearTimeout(bannerAdTimer);
+  const delay = BANNER_AD_INTERVAL_MS * (0.5 + Math.random()); // ~7.5–22.5 min, centered on the 15 min average
+  bannerAdTimer = setTimeout(() => {
+    if (adsEnabled) triggerBannerAdBroadcast();
+    scheduleBannerAd(); // keep ticking even while paused, same as adHourTimer — just gated on adsEnabled at fire time, not at schedule time
+  }, delay);
+}
+
+async function triggerBannerAdBroadcast() {
+  if (!agoraClient || !AD_LIBRARY.length) return;
+  const adIndex = Math.floor(Math.random() * AD_LIBRARY.length);
+  try {
+    await agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({ type:'bannerAdTrigger', ts:Date.now(), adIndex })), true);
+  } catch(e) { console.warn('Banner-Werbe-Trigger-Broadcast fehlgeschlagen:', e); }
+}
+
+// Player-only, no audio at all (unlike showAdOverlay, which loops a
+// jingle) — this is meant to read as a quick, cheap web-banner intrusion,
+// not a forced-attention moment.
+function showBannerAd(adIndex) {
+  if (isDM) return;
+  const entry = AD_LIBRARY[adIndex];
+  if (!entry) return;
+  closeBannerAd(); // clear any stray previous state first
+
+  document.getElementById('banner-ad-img').src = entry.image;
+  document.getElementById('banner-ad-skip-hint').style.display = 'none';
+  currentBannerAd = { adIndex, startTime: performance.now() };
+
+  document.getElementById('banner-ad-panel').classList.add('show');
+  clearTimeout(bannerAdHideTimer);
+  bannerAdHideTimer = setTimeout(closeBannerAd, (BANNER_AD_DURATION_S + 1) * 1000);
+}
+
+// Called every animate() frame while a banner is showing — same shape as
+// updateAdOverlay, just against the BANNER_AD_* constants.
+function updateBannerAd() {
+  if (!currentBannerAd) return;
+  const elapsed = (performance.now() - currentBannerAd.startTime) / 1000;
+  if (elapsed >= BANNER_AD_DURATION_S) { closeBannerAd(); return; } // reached the end before being skipped — free, no transaction
+  const hint = document.getElementById('banner-ad-skip-hint');
+  if (elapsed < BANNER_AD_NO_SKIP_S) {
+    hint.style.display = 'none';
+    return;
+  }
+  const secondsSkippable = Math.floor(elapsed - BANNER_AD_NO_SKIP_S);
+  const priced = linkedCharId && mapSync.db;
+  currentBannerAd.price = priced ? Math.max(0, BANNER_AD_SKIP_BASELINE_ED - secondsSkippable) : 0;
+  hint.style.display = 'block';
+  hint.textContent = priced ? `X zum Überspringen — ${currentBannerAd.price} ed` : 'X zum Überspringen — kostenlos';
+}
+
+async function skipBannerAd() {
+  if (!currentBannerAd || (performance.now() - currentBannerAd.startTime)/1000 < BANNER_AD_NO_SKIP_S) return;
+  const price = currentBannerAd.price || 0;
+  if (price > 0 && linkedCharId && mapSync.db) {
+    try {
+      await mapSync.db.ref('campaign/characters/'+linkedCharId+'/eurodollar')
+        .transaction(cur => Math.max(0, (cur||0) - price));
+    } catch(e) { console.warn('Banner-Werbe-Skip-Zahlung fehlgeschlagen:', e); }
+  }
+  closeBannerAd();
+}
+
+// Slides the panel back off (never display:none — the slide-out IS the
+// close) rather than an instant cut, same "no hard cuts" convention the
+// billboard's own crossfade follows.
+function closeBannerAd() {
+  document.getElementById('banner-ad-panel').classList.remove('show');
+  clearTimeout(bannerAdHideTimer);
+  currentBannerAd = null;
+}
+
 // ══════════ UI EVENTS ══════════
 // Prefill the optional CP_Phantom URL from last time, same convenience
 // convention as CP_Phantom's own 'cp_db_url' localStorage key — the field
@@ -3289,6 +3420,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
       renderRecentMaps(); renderRecentTokens();
       updateAdsToggleUI();
       startAdHourlyTimer();
+      scheduleBannerAd();
     } else if (new URLSearchParams(location.search).get('testad') === '1') {
       // DEBUG/TESTING ONLY, opt-in via ?testad=1 in the URL — self-triggers
       // a local ad 30s after joining as a player, so the player-side
