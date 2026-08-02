@@ -359,6 +359,10 @@ const AD_LIBRARY = [
   { image: 'ads/friend.png', jingle: 'ads/friend.wav', name: 'Friend' },
   { image: 'ads/workfriend.png', jingle: 'ads/workfriend.wav', name: 'Workfriend' },
 ];
+// Temporary: only one jingle exists so far, so every ad shares it instead
+// of each entry's own (mostly-not-yet-recorded) jingle field. Set this
+// back to null once more per-ad jingles exist, to fall back to entry.jingle.
+const AD_JINGLE_SHARED = 'ads/Look at the Ad.mp3';
 const BILLBOARD_HOLD_S = 5*60; // seconds each billboard ad stays up — slow on purpose, this is background scenery for an 8-hour session, not something that should keep grabbing attention
 const BILLBOARD_FADE_S = 3;    // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
 const AD_NO_SKIP_S     = 5;   // seconds before a skip option appears at all — the joke is that it's genuinely unskippable at first
@@ -3020,7 +3024,7 @@ function showAdOverlay(adIndex) {
   ensureACtx();
   let gain = null, audioEl = null;
   try {
-    audioEl = new Audio(entry.jingle);
+    audioEl = new Audio(AD_JINGLE_SHARED || entry.jingle);
     // Loops for the ad's full fixed duration (see AD_DURATION_S) rather
     // than playing once — a real jingle might be produced to roughly
     // match, but these placeholder stings are only a couple of seconds,
