@@ -154,6 +154,33 @@ body.locked #crosshair{opacity:1}
 #banner-ad-label{position:absolute;top:6px;left:6px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:9px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;padding:3px 8px}
 #banner-ad-skip-hint{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:11px;letter-spacing:.5px;text-transform:uppercase;padding:5px 9px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
 
+/* Personal cyberware HUD — small, quiet, bottom-left (never competes with
+   #ctrl/#prox, both bottom-CENTER, or #gm, top-right and DM-only). */
+#cyber-hud{position:fixed;bottom:24px;left:24px;display:flex;gap:14px;background:rgba(2,3,4,.85);border:1px solid rgba(47,216,232,.25);padding:8px 14px;z-index:200;pointer-events:none;backdrop-filter:blur(6px)}
+.ch-stat{display:flex;flex-direction:column;align-items:center;min-width:32px}
+.ch-label{font-size:8px;letter-spacing:2px;color:rgba(47,216,232,.5);text-transform:uppercase}
+.ch-val{font-family:var(--fd);font-size:14px;font-weight:700;color:var(--c);text-shadow:0 0 8px rgba(47,216,232,.5)}
+.ch-val.critical{color:var(--r);text-shadow:0 0 8px rgba(201,68,86,.6)}
+
+/* Jack-in glitch — a single non-repeating pulse (see triggerJackInGlitch),
+   two color layers nudged a few px apart to read as a chromatic-
+   aberration split, screen-blended so it tints rather than obscures. */
+#glitch-overlay{position:fixed;inset:0;z-index:9500;pointer-events:none;opacity:0}
+#glitch-overlay.pulse{animation:glitch-pulse .45s steps(1,end)}
+.glitch-layer{position:absolute;inset:0;mix-blend-mode:screen}
+#glitch-r{background:rgba(255,25,60,.22)}
+#glitch-c{background:rgba(0,220,255,.22)}
+@keyframes glitch-pulse{
+  0%{opacity:0}
+  5%{opacity:1}
+  15%{opacity:.8}
+  25%{opacity:.1}
+  35%{opacity:.9}
+  50%{opacity:.05}
+  65%{opacity:.55}
+  100%{opacity:0}
+}
+
 canvas{display:block}
 </style>
 </head>
@@ -345,6 +372,35 @@ canvas{display:block}
   <div id="banner-ad-skip-hint" style="display:none">X zum Überspringen</div>
 </div>
 
+<!-- Personal cyberware HUD — minimal always-on readout of the LOCAL
+     player's own linked character (HP/Stamina/IP/Armor/current mag),
+     styled like an actual optic overlay. Hidden entirely for the DM or
+     anyone without a linked character (see updateCyberHud). Updated off
+     the same campaign snapshot the map sync already pulls — no extra
+     Firebase listener needed. Deliberately no Humanity, per instruction.
+     Armor sums whatever pieces exist (body/head); Mag shows the first
+     weapon that actually has a magazine, current ticks only (not a
+     derived max — that requires the full weapon catalog CP_Phantom keeps
+     server-side, out of scope for a minimal HUD). -->
+<div id="cyber-hud" style="display:none">
+  <div class="ch-stat"><span class="ch-label">HP</span><span class="ch-val" id="ch-hp">—</span></div>
+  <div class="ch-stat"><span class="ch-label">STA</span><span class="ch-val" id="ch-sta">—</span></div>
+  <div class="ch-stat"><span class="ch-label">IP</span><span class="ch-val" id="ch-ip">—</span></div>
+  <div class="ch-stat" id="ch-armor-wrap"><span class="ch-label">ARM</span><span class="ch-val" id="ch-armor">—</span></div>
+  <div class="ch-stat" id="ch-mag-wrap"><span class="ch-label">MAG</span><span class="ch-val" id="ch-mag">—</span></div>
+</div>
+
+<!-- Jack-in glitch — a brief, one-shot chromatic-aberration/scanline pulse
+     over the WHOLE view (not a wall screen), fired whenever a netrunner's
+     Ping hack goes live (see triggerJackInGlitch/the netPing handler in
+     initMapSync). Everyone sees it, DM included — it's the room's own
+     systems flinching, not player-gated information. A single ~0.5s pulse,
+     never repeating/oscillating, stays well clear of strobe territory. -->
+<div id="glitch-overlay">
+  <div id="glitch-r" class="glitch-layer"></div>
+  <div id="glitch-c" class="glitch-layer"></div>
+</div>
+
 <script>
 'use strict';
 
@@ -481,6 +537,7 @@ let ambientLight, ceilingLightA, ceilingLightB, reactorLight;
 let reactorGlowMesh;
 let alarmLevelDisplayed = 0; // smoothly-interpolated 0-3 float, see updateAlarmAmbiance
 let alarmBeaconGroup, alarmBeaconMesh, alarmBeaconLight;
+let securityCamCamera, securityCamTarget; // fixed second camera + render-target texture for the wall monitor's CCTV-style feed, see buildSecurityCam
 let doorWallInfo; // east-wall doorway to the hidden side room — used for the movement passage and the audio-isolation boundary
 let tacticalView = false; // fixed bird's-eye camera over the table, for precise token placement
 
@@ -751,6 +808,7 @@ function buildRoom() {
 
   buildCeiling();
   buildMapScreen();
+  buildNewsTicker();
   buildArchiveWall();
   buildSecretWing();
   buildReactor(-OCT_HW+0.03, 0, Math.PI/2);
@@ -820,6 +878,68 @@ function buildMapScreen() {
   const screen=new THREE.Mesh(new THREE.PlaneGeometry(W,H),
     new THREE.MeshBasicMaterial({map:mapScreenTexture}));
   screen.position.set(w.mid[0]+offset.x,1.8,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
+}
+
+// Corpo news ticker — a thin scrolling headline strip mounted just below
+// the map screen (which bottoms out at y=0.8, leaving clearance down to
+// the floor). Pure worldbuilding texture: original flavor headlines, not
+// live CP_Phantom data like everything else on this wall. Draws the full
+// headline string repeatedly at a fixed period so it loops seamlessly
+// regardless of the canvas width vs. text length (see updateNewsTicker).
+const NEWS_HEADLINES = [
+  'ARASAKA STOCK SURGES AFTER "MINOR" REACTOR INCIDENT',
+  'NCPD RESPONSE TIMES IN CONTESTED DISTRICTS NOW MEASURED IN DAYS',
+  'MILITECH UNVEILS NEW COMBAT DRONE, CITIZENS ASKED NOT TO WORRY',
+  'BIOTECHNICA RECALLS BATCH OF "OVERLY SENTIENT" HOUSEPLANTS',
+  'TRAUMA TEAM PLATINUM MEMBERSHIP NOW INCLUDES YOUR FUNERAL',
+  'NETWATCH WARNS OF RISE IN UNLICENSED THOUGHTS',
+  'LOCAL FIXER DENIES BEING THREE RACCOONS IN A TRENCH COAT',
+  'MAXTAC RESPONSE UNIT WINS "MOST IMPROVED" AT CORPO GALA',
+  'STUDY: NINE IN TEN CITIZENS PREFER NOT TO THINK ABOUT IT',
+  'CITY COUNCIL APPROVES NEW TOLL ON BREATHING DOWNTOWN',
+];
+let newsTickerCanvas, newsTickerCtx, newsTickerTexture;
+let newsTickerOffset = 0, newsTickerFullText = '', newsTickerPeriod = 0;
+const NEWS_TICKER_SPEED = 140; // canvas px/sec
+function buildNewsTicker() {
+  const w = octWallDefs()[0]; // same north wall as the map screen above it
+  const TW = MAP_SCREEN_W, TH = 0.22, ty = 0.5;
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(TW+0.08,TH+0.08,0.035),mat(GLASS,0,0,0.5,0.3));
+  frame.position.set(w.mid[0],ty,w.mid[1]); frame.rotation.y=w.ry; scene.add(frame);
+
+  newsTickerCanvas = document.createElement('canvas');
+  newsTickerCanvas.width = 1600; newsTickerCanvas.height = Math.round(1600*(TH/TW));
+  newsTickerCtx = newsTickerCanvas.getContext('2d');
+  newsTickerCtx.font = `${Math.round(newsTickerCanvas.height*0.5)}px 'Share Tech Mono', monospace`;
+  newsTickerFullText = NEWS_HEADLINES.join('     //     ');
+  const textWidth = newsTickerCtx.measureText(newsTickerFullText).width;
+  newsTickerPeriod = textWidth + textWidth*0.15; // trailing gap before the loop repeats
+  newsTickerTexture = new THREE.CanvasTexture(newsTickerCanvas);
+
+  const offset = new THREE.Vector3(0,0,0.03).applyEuler(new THREE.Euler(0,w.ry,0));
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(TW,TH),
+    new THREE.MeshBasicMaterial({map:newsTickerTexture}));
+  screen.position.set(w.mid[0]+offset.x, ty, w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
+}
+
+// Called every animate() frame — cheap (one fillRect + a handful of
+// fillText calls on a small canvas).
+function updateNewsTicker(dt) {
+  if (!newsTickerCtx || !newsTickerPeriod) return;
+  const ctx = newsTickerCtx, c = newsTickerCanvas, W=c.width, H=c.height;
+  newsTickerOffset = (newsTickerOffset + NEWS_TICKER_SPEED*dt) % newsTickerPeriod;
+
+  ctx.fillStyle = '#050708'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle = 'rgba(47,216,232,0.25)'; ctx.lineWidth = 2;
+  ctx.strokeRect(1,1,W-2,H-2);
+  ctx.font = `${Math.round(H*0.5)}px 'Share Tech Mono', monospace`;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(47,216,232,0.85)';
+  try { ctx.letterSpacing = '2px'; } catch(e) {} // unsupported in older browsers — purely cosmetic, safe to skip
+  for (let x = -newsTickerOffset; x < W; x += newsTickerPeriod) {
+    ctx.fillText(newsTickerFullText, x, H/2);
+  }
+  newsTickerTexture.needsUpdate = true;
 }
 
 // Static noise, drawn once (never regenerated per frame, so it can never
@@ -990,6 +1110,11 @@ function initMapSync(dbUrl) {
       if (!isFirstNet) {
         const srcPos = mapSync.campaign?.map?.tokens?.[netPing.sourceCharId];
         if (srcPos) mapSync.netSweep = { x: srcPos.x, y: srcPos.y, startTime: performance.now() };
+        // The room itself flinches when someone jacks in — a brief, one-shot
+        // glitch pulse independent of the map sweep above (fires even if
+        // srcPos wasn't found), same "everyone sees it" reasoning as the
+        // map sweep: this is ambient room feedback, not player-gated info.
+        triggerJackInGlitch();
       }
     } else if (mapSync.lastNetPingTs === undefined) {
       mapSync.lastNetPingTs = null;
@@ -1005,6 +1130,7 @@ function initMapSync(dbUrl) {
     } else if (mapSync.lastPortraitRevealTs === undefined) {
       mapSync.lastPortraitRevealTs = null;
     }
+    updateCyberHud(); // refresh the local player's own HP/Stamina/IP/Armor/Mag readout every time campaign data changes
   }, err => {
     // Permission-denied / bad URL / offline all land here — logged once
     // per Firebase, never thrown, never shown to the user.
@@ -1240,6 +1366,65 @@ function showPortraitReveal(charId) {
   panel.classList.add('show');
   clearTimeout(portraitRevealHideTimer);
   portraitRevealHideTimer = setTimeout(() => panel.classList.remove('show'), PORTRAIT_REVEAL_HOLD_S * 1000);
+}
+
+// One-shot chromatic-aberration/scanline pulse over the whole view — see
+// the netPing handler above for the trigger. Restarting a CSS animation
+// requires forcing a reflow between removing and re-adding the class
+// (otherwise the browser coalesces the two class changes and the
+// animation never restarts for a hack that fires again before the first
+// pulse finished). Fresh random offsets each time so back-to-back hacks
+// don't look identical.
+function triggerJackInGlitch() {
+  const el = document.getElementById('glitch-overlay');
+  if (!el) return;
+  const rOffset = (Math.random()*8-4).toFixed(1);
+  const cOffset = (Math.random()*8-4).toFixed(1);
+  document.getElementById('glitch-r').style.transform = `translateX(${rOffset}px)`;
+  document.getElementById('glitch-c').style.transform = `translateX(${-cOffset}px)`;
+  el.classList.remove('pulse');
+  void el.offsetWidth; // force reflow — see comment above
+  el.classList.add('pulse');
+}
+
+// Personal cyberware HUD — refreshed every time the campaign snapshot
+// changes (see the .on('value') handler above), same "no extra listener"
+// reasoning the map tokens' portraits already follow. Mag shows current
+// ticks only for the first weapon that actually has one — see the HTML
+// comment above #cyber-hud for why there's no derived max shown.
+function updateCyberHud() {
+  const hud = document.getElementById('cyber-hud');
+  if (!hud) return;
+  if (isDM || !linkedCharId) { hud.style.display = 'none'; return; }
+  const c = mapSync.campaign?.characters?.[linkedCharId];
+  if (!c) { hud.style.display = 'none'; return; }
+  hud.style.display = 'flex';
+
+  const setStat = (id, cur, max) => {
+    const el = document.getElementById(id);
+    el.textContent = `${cur}/${max}`;
+    el.classList.toggle('critical', max > 0 && cur/max <= 0.3);
+  };
+  setStat('ch-hp', c.hp_current ?? c.hp_max ?? 0, c.hp_max ?? 0);
+  setStat('ch-sta', c.stamina_current ?? c.stamina_max ?? 0, c.stamina_max ?? 0);
+  setStat('ch-ip', c.ip_current ?? c.ip_max ?? 0, c.ip_max ?? 0);
+
+  // Armor — summed across whatever pieces are actually equipped
+  // (body/head), sp_temp (current, ablates on hits) over sp_base (max).
+  let armorCur = 0, armorMax = 0, hasArmor = false;
+  if (c.armor_body?.sp_base != null) { hasArmor = true; armorMax += c.armor_body.sp_base; armorCur += c.armor_body.sp_temp ?? c.armor_body.sp_base; }
+  if (c.armor_head?.sp_base != null) { hasArmor = true; armorMax += c.armor_head.sp_base; armorCur += c.armor_head.sp_temp ?? c.armor_head.sp_base; }
+  document.getElementById('ch-armor-wrap').style.display = hasArmor ? 'flex' : 'none';
+  if (hasArmor) setStat('ch-armor', armorCur, armorMax);
+
+  const wpn = (c.weapons || []).find(w => w.magCurrent != null);
+  const magWrap = document.getElementById('ch-mag-wrap');
+  magWrap.style.display = wpn ? 'flex' : 'none';
+  if (wpn) {
+    const magEl = document.getElementById('ch-mag');
+    magEl.textContent = wpn.magCurrent;
+    magEl.classList.toggle('critical', wpn.magCurrent === 0);
+  }
 }
 
 let mapSyncFogCanvas=null, mapSyncFogCtx=null;
@@ -2100,6 +2285,34 @@ function buildBlastDoor() {
   }
 
   buildBillboard(w);
+  buildSecurityCam(w);
+}
+
+// A small CCTV-style wall monitor mounted above the billboard, fed by a
+// SECOND camera rendered to a texture (see the render-to-target pass in
+// animate()) rather than a mirror of the player's own view — the camera
+// sits in a fixed corner near the reactor-side ceiling looking back across
+// the table toward the door, a plausible "someone else is watching this
+// room" angle. Fitting for a room literally named after a Faraday cage.
+// Pure Three.js trick: no live data, no new state beyond the camera +
+// render target themselves.
+function buildSecurityCam(w) {
+  const MW = 0.36, MH = 0.24;
+  const my = WALL_H*0.855; // the gap between the billboard's top edge and the slab's own top
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(MW+0.06,MH+0.06,0.04),mat(GLASS,0,0,0.5,0.3));
+  frame.position.set(w.mid[0],my,w.mid[1]); frame.rotation.y=w.ry; scene.add(frame);
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(MW+0.09,MH+0.09,0.018),mat(CYAN,CYAN,1.2));
+  edge.position.set(w.mid[0],my,w.mid[1]); edge.rotation.y=w.ry; scene.add(edge);
+
+  securityCamTarget = new THREE.WebGLRenderTarget(480, 320);
+  const offset = new THREE.Vector3(0,0,0.035).applyEuler(new THREE.Euler(0,w.ry,0));
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(MW,MH),
+    new THREE.MeshBasicMaterial({map: securityCamTarget.texture}));
+  screen.position.set(w.mid[0]+offset.x, my, w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
+
+  securityCamCamera = new THREE.PerspectiveCamera(55, MW/MH, 0.1, 20);
+  securityCamCamera.position.set(-2.6, WALL_H-0.3, -2.0);
+  securityCamCamera.lookAt(0, 0.9, 2.2);
 }
 
 // A corporate ad billboard bolted onto the blast door itself — plastered
@@ -2788,9 +3001,20 @@ function animate() {
 
   updateAlarmAmbiance(dt);
   updateBillboard(dt);
+  updateNewsTicker(dt);
   updateAdOverlay();
   updateBannerAd();
 
+  // Security-cam feed — rendered from the FIXED second camera into its own
+  // render target before the main render, then the main render (which
+  // includes the wall monitor sampling that same target) runs normally
+  // against the player's own camera. setRenderTarget(null) restores the
+  // default framebuffer so the main pass actually reaches the screen.
+  if (securityCamCamera && securityCamTarget) {
+    renderer.setRenderTarget(securityCamTarget);
+    renderer.render(scene, securityCamCamera);
+    renderer.setRenderTarget(null);
+  }
   renderer.render(scene,camera);
 }
 
