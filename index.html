@@ -524,17 +524,18 @@ const ALARM_BASE_AMBIENT_COLOR = new THREE.Color(0x0d1114);
 const ALARM_ALERT_AMBIENT_COLOR = new THREE.Color(0x2a0806);
 const ALARM_BASE_CEIL_COLOR = new THREE.Color(0xcfe8ec);
 const ALARM_ALERT_CEIL_COLOR = new THREE.Color(0xff2200);
-const ALARM_BASE_REACTOR_COLOR = new THREE.Color(AMBER);
-const ALARM_ALERT_REACTOR_COLOR = new THREE.Color(0xff2200);
+const ALARM_BASE_ACCENT_COLOR = new THREE.Color(AMBER);
+const ALARM_ALERT_ACCENT_COLOR = new THREE.Color(0xff2200);
 const ALARM_TRANSITION_S = 2.5; // seconds to smoothly interpolate the displayed level toward the real one — a level change never pops
 
 const PORTRAIT_REVEAL_HOLD_S = 30; // seconds the GM's "reveal to players" slide-in panel stays visible before sliding back off — see showPortraitReveal
 
 // ══════════ THREE STATE ══════════
 let renderer, scene, camera, clock;
-let particleMesh, vaporMesh;
-let ambientLight, ceilingLightA, ceilingLightB, reactorLight;
-let reactorGlowMesh;
+let particleMesh;
+let ambientLight, ceilingLightA, ceilingLightB, armoryLight;
+let armoryGlowMesh;
+let reactorGlowMesh; // north-wall map screen's own edge trim — pulses in animate() alongside the west wall's warm accent for visual cohesion, unrelated to buildArmoryWall itself
 let alarmLevelDisplayed = 0; // smoothly-interpolated 0-3 float, see updateAlarmAmbiance
 let alarmBeaconGroup, alarmBeaconMesh, alarmBeaconLight;
 let securityCamCamera, securityCamTarget; // fixed second camera + render-target texture for the wall monitor's CCTV-style feed, see buildSecurityCam
@@ -811,7 +812,7 @@ function buildRoom() {
   buildNewsTicker();
   buildArchiveWall();
   buildSecretWing();
-  buildReactor(-OCT_HW+0.03, 0, Math.PI/2);
+  buildArmoryWall();
   buildBlastDoor();
   buildPortraits();
 }
@@ -2183,34 +2184,134 @@ function isInSecretWing(x, z) {
   return localZ > 0.5;
 }
 
-// West wall — the reactor/coolant core, standing in for a hearth: the
-// room's one warm point-light source. A slow, multi-second pulse only —
-// no strobe, no flicker, just a calm heartbeat.
-function buildReactor(x,z,ry) {
-  const grp=new THREE.Group();
-  const surround=new THREE.Mesh(new THREE.BoxGeometry(1.5,1.85,0.35),mat(GLASS,0,0,0.5,0.3));
-  surround.position.set(0,0.93,0); grp.add(surround);
-  const core=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.32,0.85,20),
-    new THREE.MeshStandardMaterial({color:0x1a1008,emissive:AMBER,emissiveIntensity:1.6,roughness:0.4,metalness:0.2}));
-  core.rotation.x=Math.PI/2; core.position.set(0,0.62,0.1); grp.add(core);
-  reactorCoreMesh = core;
-  const ring=new THREE.Mesh(new THREE.TorusGeometry(0.36,0.025,10,32),mat(CYAN,CYAN,1.6));
-  ring.position.set(0,0.62,0.11); grp.add(ring);
-  const mantel=new THREE.Mesh(new THREE.BoxGeometry(1.68,0.09,0.4),mat(STEEL,STEEL,0.2,0.5,0.3));
-  mantel.position.set(0,1.5,0); grp.add(mantel);
-  const mantelEdge=new THREE.Mesh(new THREE.BoxGeometry(1.7,0.02,0.42),mat(CYAN,CYAN,1.4));
-  mantelEdge.position.set(0,1.55,0); grp.add(mantelEdge);
-  const breast=new THREE.Mesh(new THREE.BoxGeometry(1.05,WALL_H-1.6,0.28),mat(GLASS,0,0,0.5,0.3));
-  breast.position.set(0,1.6+(WALL_H-1.6)/2,0.03); grp.add(breast);
-
-  grp.position.set(x,0,z); grp.rotation.y=ry; scene.add(grp);
-
-  reactorLight = new THREE.PointLight(AMBER, 1.0, 4.5);
-  const off = new THREE.Vector3(0,0.55,0.6).applyEuler(new THREE.Euler(0,ry,0));
-  reactorLight.position.set(x+off.x, 0.62, z+off.z);
-  scene.add(reactorLight);
+// West wall — an armory rack. This is the DM's own backdrop: the wall
+// players spend most of a session facing while the GM stands in front of
+// it, so it gets more visual budget than the room's smaller detail props
+// (a high-res backlit canvas, not a flat color). Replaces the old
+// reactor/hearth prop, which — mantel shelf plus a round warm glow —
+// unavoidably read as a literal fireplace rather than sci-fi tech. Still
+// supplies the room's one deliberate warm accent (see armoryLight/
+// armoryGlowMesh, pulsed in animate() the same slow, no-strobe way the
+// reactor light was), just spread across a display case instead of one
+// point source shaped like a hearth.
+const ARMORY_LOADOUT = ['rifle','smg','pistol','blade','shotgun'];
+function buildWeaponMount(kind) {
+  const grp = new THREE.Group();
+  const wm = mat(0x0a0a0d, 0, 0, 0.35, 0.55); // dark gunmetal silhouette — the backlit panel behind it does the actual "reading" work, not surface detail on the weapon itself
+  const add = (geo, x,y,z, rz=0) => {
+    const m = new THREE.Mesh(geo, wm);
+    m.position.set(x,y,z);
+    if (rz) m.rotation.z = rz;
+    grp.add(m);
+  };
+  if (kind === 'rifle') {
+    add(new THREE.BoxGeometry(0.62,0.06,0.05), 0,0,0);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,0.34,10), wm);
+    barrel.rotation.z = Math.PI/2; barrel.position.set(-0.48,0,0); grp.add(barrel);
+    add(new THREE.BoxGeometry(0.16,0.16,0.045), 0.28,-0.08,0, -0.35);
+    add(new THREE.BoxGeometry(0.05,0.16,0.04), -0.05,-0.13,0);
+  } else if (kind === 'smg') {
+    add(new THREE.BoxGeometry(0.34,0.09,0.06), 0,0,0);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.014,0.014,0.14,10), wm);
+    barrel.rotation.z = Math.PI/2; barrel.position.set(-0.24,0,0); grp.add(barrel);
+    add(new THREE.BoxGeometry(0.045,0.17,0.045), -0.02,-0.13,0);
+    add(new THREE.BoxGeometry(0.13,0.11,0.045), 0.19,-0.06,0, -0.3);
+  } else if (kind === 'shotgun') {
+    const b1 = new THREE.Mesh(new THREE.CylinderGeometry(0.016,0.016,0.42,10), wm);
+    b1.rotation.z = Math.PI/2; b1.position.set(-0.05,0.02,-0.025); grp.add(b1);
+    const b2 = new THREE.Mesh(new THREE.CylinderGeometry(0.016,0.016,0.42,10), wm);
+    b2.rotation.z = Math.PI/2; b2.position.set(-0.05,0.02,0.025); grp.add(b2);
+    add(new THREE.BoxGeometry(0.3,0.09,0.07), 0.24,-0.02,0);
+    add(new THREE.BoxGeometry(0.17,0.17,0.06), 0.42,-0.09,0, -0.35);
+  } else if (kind === 'pistol') {
+    add(new THREE.BoxGeometry(0.2,0.08,0.045), 0,0.03,0);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.013,0.013,0.11,10), wm);
+    barrel.rotation.z = Math.PI/2; barrel.position.set(-0.12,0.03,0); grp.add(barrel);
+    add(new THREE.BoxGeometry(0.06,0.15,0.04), 0.06,-0.08,0, 0.18);
+  } else if (kind === 'blade') {
+    add(new THREE.BoxGeometry(0.05,0.7,0.012), 0,0.15,0);
+    add(new THREE.BoxGeometry(0.11,0.03,0.025), 0,-0.21,0);
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.017,0.16,10), wm);
+    grip.position.set(0,-0.29,0); grp.add(grip);
+  }
+  return grp;
 }
-let reactorCoreMesh;
+
+function buildArmoryWall() {
+  const w = octWallDefs()[6]; // west, main wall
+  const PW = w.width - 0.5, PH = 1.7, py = 1.55;
+  const tangent = [Math.cos(w.ry), -Math.sin(w.ry)]; // same wall-relative "sideways" convention buildArchiveWall uses for its own jamb offsets
+
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(PW+0.14,PH+0.14,0.08),mat(GLASS,0,0,0.5,0.3));
+  frame.position.set(w.mid[0],py,w.mid[1]); frame.rotation.y=w.ry; scene.add(frame);
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(PW+0.2,PH+0.2,0.03),mat(CYAN,CYAN,1.3));
+  edge.position.set(w.mid[0],py,w.mid[1]); edge.rotation.y=w.ry; scene.add(edge);
+
+  // High-res backlit canvas: a soft amber glow pool centered on each mount
+  // slot, a fine circuit-grid overlay, thin slot-divider lines, and a
+  // vignette — real detail on the panel itself, not just a flat glow, so
+  // it holds up under the long, close-range look this wall is going to get.
+  const n = ARMORY_LOADOUT.length;
+  const canvas=document.createElement('canvas');
+  canvas.width=2200; canvas.height=Math.round(2200*(PH/PW));
+  const cctx=canvas.getContext('2d');
+  const CW=canvas.width, CH=canvas.height;
+  cctx.fillStyle='#0b0805'; cctx.fillRect(0,0,CW,CH);
+  for (let i=0;i<n;i++){
+    const cx = CW*((i+0.5)/n), cy = CH*0.46;
+    const grad = cctx.createRadialGradient(cx,cy,10, cx,cy,CH*0.55);
+    grad.addColorStop(0,'rgba(217,138,61,0.55)');
+    grad.addColorStop(1,'rgba(217,138,61,0)');
+    cctx.fillStyle=grad; cctx.fillRect(0,0,CW,CH);
+  }
+  cctx.strokeStyle='rgba(217,138,61,0.12)'; cctx.lineWidth=1;
+  const gStepX=CW/70, gStepY=CH/26;
+  for(let gx=0; gx<CW; gx+=gStepX){ cctx.beginPath(); cctx.moveTo(gx,0); cctx.lineTo(gx,CH); cctx.stroke(); }
+  for(let gy=0; gy<CH; gy+=gStepY){ cctx.beginPath(); cctx.moveTo(0,gy); cctx.lineTo(CW,gy); cctx.stroke(); }
+  cctx.strokeStyle='rgba(47,216,232,0.22)'; cctx.lineWidth=2;
+  for(let i=1;i<n;i++){ const dx=CW*(i/n); cctx.beginPath(); cctx.moveTo(dx,CH*0.06); cctx.lineTo(dx,CH*0.94); cctx.stroke(); }
+  const vg = cctx.createRadialGradient(CW/2,CH/2,CH*0.3, CW/2,CH/2,CW*0.6);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.55)');
+  cctx.fillStyle=vg; cctx.fillRect(0,0,CW,CH);
+
+  const panelOff = new THREE.Vector3(0,0,0.045).applyEuler(new THREE.Euler(0,w.ry,0));
+  armoryGlowMesh = new THREE.Mesh(new THREE.PlaneGeometry(PW,PH),
+    new THREE.MeshStandardMaterial({color:0x000000, emissive:0xffffff, emissiveMap:new THREE.CanvasTexture(canvas), emissiveIntensity:1.3, roughness:0.9}));
+  armoryGlowMesh.position.set(w.mid[0]+panelOff.x, py, w.mid[1]+panelOff.z);
+  armoryGlowMesh.rotation.y=w.ry; scene.add(armoryGlowMesh);
+
+  // Thin amber trim along the case's own bottom edge — a full-width
+  // display-case accent line, not a protruding shelf, so it never reads
+  // as a mantel the way the old reactor's did.
+  const baseStrip = new THREE.Mesh(new THREE.BoxGeometry(PW,0.025,0.05), mat(AMBER,AMBER,1.2));
+  baseStrip.position.set(w.mid[0]+panelOff.x, py-PH/2-0.02, w.mid[1]+panelOff.z);
+  baseStrip.rotation.y = w.ry; scene.add(baseStrip);
+
+  // Weapon mounts — standoff-pegged a few cm in front of the glow panel
+  // so each hangs as a dark silhouette over its own lit pool, same
+  // "backlit case" read as a real display rack.
+  const weaponOff = new THREE.Vector3(0,0,0.115).applyEuler(new THREE.Euler(0,w.ry,0));
+  const pegOff = new THREE.Vector3(0,0,0.08).applyEuler(new THREE.Euler(0,w.ry,0));
+  ARMORY_LOADOUT.forEach((kind,i) => {
+    const localX = ((i+0.5)/n - 0.5) * (PW-0.5);
+    const px = w.mid[0]+tangent[0]*localX, pz = w.mid[1]+tangent[1]*localX;
+
+    [-0.15,0.15].forEach(dy=>{
+      const peg=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.03,0.09),mat(STEEL,0,0,0.4,0.5));
+      peg.position.set(px+pegOff.x,py+dy,pz+pegOff.z); peg.rotation.y=w.ry; scene.add(peg);
+    });
+
+    const wpnGrp = buildWeaponMount(kind);
+    wpnGrp.position.set(px+weaponOff.x, py+(kind==='blade'?0.05:0), pz+weaponOff.z);
+    wpnGrp.rotation.y = w.ry;
+    scene.add(wpnGrp);
+  });
+
+  armoryLight = new THREE.PointLight(AMBER, 0.9, 5.5);
+  const lightOff = new THREE.Vector3(0,0,0.35).applyEuler(new THREE.Euler(0,w.ry,0));
+  armoryLight.position.set(w.mid[0]+lightOff.x, py, w.mid[1]+lightOff.z);
+  scene.add(armoryLight);
+}
 
 // Ceiling-mounted alarm beacon — dark and inert at Green/Yellow, only
 // spins up from Orange toward Red. A small emissive bulb + point light
@@ -2249,7 +2350,7 @@ function updateAlarmAmbiance(dt) {
   if (ambientLight) ambientLight.color.lerpColors(ALARM_BASE_AMBIENT_COLOR, ALARM_ALERT_AMBIENT_COLOR, t);
   if (ceilingLightA) ceilingLightA.color.lerpColors(ALARM_BASE_CEIL_COLOR, ALARM_ALERT_CEIL_COLOR, t);
   if (ceilingLightB) ceilingLightB.color.lerpColors(ALARM_BASE_CEIL_COLOR, ALARM_ALERT_CEIL_COLOR, t);
-  if (reactorLight) reactorLight.color.lerpColors(ALARM_BASE_REACTOR_COLOR, ALARM_ALERT_REACTOR_COLOR, t);
+  if (armoryLight) armoryLight.color.lerpColors(ALARM_BASE_ACCENT_COLOR, ALARM_ALERT_ACCENT_COLOR, t);
 
   // beacon: 0 below Orange, ramps 0..1 from Orange(2) to Red(3)
   const beaconT = Math.max(0, Math.min(1, alarmLevelDisplayed-2));
@@ -2646,7 +2747,7 @@ async function broadcastToken(msg, reliable) {
   } catch(e) { console.warn('token broadcast failed:', e); }
 }
 
-let dustSpd, vaporSpd;
+let dustSpd;
 function buildParticles() {
   // faint drifting dust motes — slow, low-opacity, cyan-tinted
   const N=90, pos=new Float32Array(N*3);
@@ -2661,20 +2762,6 @@ function buildParticles() {
   g.setAttribute('position',new THREE.BufferAttribute(pos,3));
   particleMesh=new THREE.Points(g,new THREE.PointsMaterial({color:0x8fd6de,size:.013,transparent:true,opacity:.2}));
   scene.add(particleMesh);
-
-  // faint rising vapor near the reactor
-  const R=34, rpos=new Float32Array(R*3);
-  vaporSpd=new Float32Array(R);
-  for(let i=0;i<R;i++){
-    rpos[i*3]  = -OCT_HW+0.3+Math.random()*1.0;
-    rpos[i*3+1]= Math.random()*1.4;
-    rpos[i*3+2]= -0.6+Math.random()*1.2;
-    vaporSpd[i]= .2+Math.random()*.4;
-  }
-  const rg=new THREE.BufferGeometry();
-  rg.setAttribute('position',new THREE.BufferAttribute(rpos,3));
-  vaporMesh=new THREE.Points(rg,new THREE.PointsMaterial({color:0xcfe0c4,size:.018,transparent:true,opacity:.3}));
-  scene.add(vaporMesh);
 }
 
 // ══════════ AVATAR ══════════
@@ -2985,16 +3072,10 @@ function animate() {
     for(let i=0;i<dustSpd.length;i++){pos[i*3+1]+=dustSpd[i]*dt*.2;if(pos[i*3+1]>WALL_H)pos[i*3+1]=0;}
     particleMesh.geometry.attributes.position.needsUpdate=true;
   }
-  // rising vapor near the reactor
-  if(vaporMesh){
-    const pos=vaporMesh.geometry.attributes.position.array;
-    for(let i=0;i<vaporSpd.length;i++){pos[i*3+1]+=vaporSpd[i]*dt*.35;if(pos[i*3+1]>1.6)pos[i*3+1]=0;}
-    vaporMesh.geometry.attributes.position.needsUpdate=true;
-  }
-
-  // reactor pulse — slow, multi-second cycle only, no strobe
-  if(reactorLight) reactorLight.intensity = 1.0 + Math.sin(_t*0.9)*0.12;
-  if(reactorCoreMesh) reactorCoreMesh.material.emissiveIntensity = 1.6 + Math.sin(_t*0.7)*0.2;
+  // armory-wall pulse — slow, multi-second cycle only, no strobe (same
+  // reasoning the old reactor light followed)
+  if(armoryLight) armoryLight.intensity = 1.0 + Math.sin(_t*0.9)*0.12;
+  if(armoryGlowMesh) armoryGlowMesh.material.emissiveIntensity = 1.3 + Math.sin(_t*0.7)*0.15;
   if(reactorGlowMesh) reactorGlowMesh.material.emissiveIntensity = 1.3 + Math.sin(_t*0.5+1)*0.15;
   if(ceilingLightA) ceilingLightA.intensity = 0.55 + Math.sin(_t*0.4)*0.05;
   if(ceilingLightB) ceilingLightB.intensity = 0.5 + Math.sin(_t*0.4+2)*0.05;
