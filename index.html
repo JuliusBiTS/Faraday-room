@@ -51,6 +51,17 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 .jbtn:disabled{opacity:.5;cursor:not-allowed}
 .pv-btn{width:100%;background:transparent;border:1px solid rgba(47,216,232,0.3);color:rgba(47,216,232,0.85);font-family:var(--fd);font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:10px;cursor:pointer;transition:all .2s;margin-bottom:12px}
 .pv-btn:hover{background:rgba(47,216,232,0.1);border-color:var(--c)}
+/* SELF-PREVIEW — check your own camera/mic before joining, so nobody
+   discovers mid-session that their camera was off the whole time. Opt-in
+   (a button, not automatic) so it never surprises anyone with a
+   permission prompt just for loading the page. */
+#preview-box{display:none;align-items:center;gap:12px;margin-bottom:12px;padding:10px;background:rgba(0,0,0,0.3);border:1px solid rgba(47,216,232,0.15)}
+#preview-video{width:96px;height:72px;object-fit:cover;background:#111;border:1px solid rgba(47,216,232,0.3);flex-shrink:0}
+.pv-meter-col{flex:1;display:flex;flex-direction:column;gap:7px;min-width:0}
+.pv-meter{width:100%;height:8px;background:rgba(0,0,0,0.5);border:1px solid rgba(47,216,232,0.2);overflow:hidden}
+.pv-meter-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--g),var(--c));transition:width .08s linear}
+.pv-hint{font-size:9px;letter-spacing:1px;color:rgba(47,216,232,0.5);text-transform:uppercase}
+.pv-error{font-size:11px;color:var(--r);margin:-4px 0 12px}
 
 /* "Erweitert": everything a returning/invited player never needs to touch
    (App-ID, token, database URL, invite link). Closed by default; opened
@@ -108,6 +119,16 @@ body.locked #crosshair{opacity:1}
 .vol-label{font-size:10px;letter-spacing:1px;color:rgba(47,216,232,.7);margin-bottom:4px;text-transform:uppercase;display:flex;justify-content:space-between}
 .vol-row input[type=range]{width:100%;accent-color:#2fd8e8}
 .vol-empty{padding:14px;font-size:10px;color:rgba(47,216,232,.4);text-align:center}
+/* Mic noise-gate controls inside the volume panel (see updateNoiseGate) */
+.gate-toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.gate-toggle-row label{font-size:10px;letter-spacing:1px;color:rgba(47,216,232,.7);text-transform:uppercase}
+.gate-meter{position:relative;height:6px;border-radius:3px;background:rgba(47,216,232,.12);margin-top:6px;overflow:hidden}
+.gate-meter-fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:#3ecf6e;transition:width .08s linear,background .15s}
+.gate-meter-fill.gate-closed{background:rgba(47,216,232,.35)}
+.gate-meter-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:#d1495b}
+/* Shown briefly when joined without a mic/camera, or after a retry */
+#media-notice{position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:600;max-width:90vw;padding:8px 18px;font-size:11px;letter-spacing:1.5px;color:#f3d9a0;background:rgba(36,24,10,.94);border:1px solid rgba(217,138,61,.6);pointer-events:none;opacity:0;transition:opacity .3s;text-align:center}
+#media-notice.show{opacity:1}
 
 /* GM PANEL */
 #gm{position:fixed;right:24px;top:70px;width:270px;background:rgba(6,9,11,.97);border:1px solid rgba(217,138,61,.28);z-index:200;backdrop-filter:blur(10px)}
@@ -277,6 +298,15 @@ canvas{display:block}
       <span class="tpill"></span>
       <span class="dlabel">GM-Zugang</span>
     </label>
+    <button class="pv-btn" id="preview-btn" type="button">🎥 Kamera &amp; Mikrofon testen</button>
+    <div id="preview-box">
+      <video id="preview-video" autoplay muted playsinline></video>
+      <div class="pv-meter-col">
+        <div class="pv-meter"><div class="pv-meter-fill" id="pv-meter-fill"></div></div>
+        <div class="pv-hint">Sprich kurz — der Balken sollte sich bewegen</div>
+      </div>
+    </div>
+    <div class="pv-error" id="pv-error"></div>
     <details class="adv" id="adv">
       <summary><span>⚙ Erweitert</span><span id="adv-state"></span></summary>
       <div class="adv-body">
@@ -295,6 +325,13 @@ canvas{display:block}
           <input class="fi" id="f-dburl" type="text" placeholder="https://dein-projekt-default-rtdb.firebaseio.com" autocomplete="off" spellcheck="false"/>
           <div class="fh">Spiegelt Karte, Token und Nebel des Kriegs vom GM-Tool live auf die Nordwand. Leer lassen, wenn keine Kampagne läuft — die Wand bleibt dann einfach im Standby.</div>
         </div>
+        <div class="fg">
+          <label class="fl" for="f-mic">Mikrofon</label>
+          <select class="fi" id="f-mic" style="font-size:13px"><option value="">Standard-Gerät</option></select>
+          <label class="fl" for="f-cam" style="margin-top:8px">Kamera</label>
+          <select class="fi" id="f-cam" style="font-size:13px"><option value="">Standard-Gerät</option></select>
+          <div class="fh">Nur ändern, wenn das Standardgerät nicht passt (z. B. Headset). Gerätenamen erscheinen nach „Kamera &amp; Mikrofon testen".</div>
+        </div>
         <button class="pv-btn" id="invite-btn" type="button" title="Erzeugt einen Link, der App-ID, Raum-Code, Token und Datenbank-URL schon eingetragen hat — zum Verschicken an die Gruppe">🔗 Einladungslink kopieren</button>
       </div>
     </details>
@@ -305,6 +342,7 @@ canvas{display:block}
   </div>
 </div>
 
+<div id="media-notice"></div>
 <canvas id="c"></canvas>
 <div id="crosshair"></div>
 
@@ -683,6 +721,8 @@ const JUMP_FORCE = 6;
 // the receiving end is fundamentally unreliable, not just an ordering race.
 const MUSIC_UID_OFFSET = 1000000;
 let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
+let gatedMicTrack = null; // the custom Agora track actually published for voice — see buildGatedMicTrack()
+let localPublishReady = false; // set once the very first publish after joining has finished — until then the join flow owns publishing, not the "start mic/camera later" buttons
 let localUID = null, localName = '', isDM = false;
 let linkedCharId = null; // player's chosen campaign/characters/{id} for ad-skip billing — null if unset (DM never has one, see the join handler)
 let joinedAppId = null, joinedRoom = null, joinedToken = null;
@@ -693,6 +733,29 @@ const users = {};
 let audioCtx = null;
 let musicGain = null, musicUid = null; // ambient music's own isolation gain node
 let spatialMode = true; // per-listener preference: true = positional 3D audio, false = flat, same volume for everyone
+
+// Personal music volume — a second gain node chained after musicGain, so
+// this is purely a multiplier on top of the existing location-based
+// isolation (0 in the secret room, 0.85 otherwise) rather than fighting
+// over the same value. Local-only, never broadcast, persisted.
+const MUSIC_VOLUME_KEY = 'faradayRoomMusicVolume';
+let musicVolume = parseFloat(localStorage.getItem(MUSIC_VOLUME_KEY));
+if (isNaN(musicVolume)) musicVolume = 1;
+let musicVolumeGain = null;
+
+// Per-person volume, keyed by their entered name rather than their uid —
+// uid is freshly randomized on every join (see localUID below), so it can
+// never identify "the same player" across a reconnect or the next session.
+// Purely local/personal (never broadcast): this is one listener's own
+// preference for how loud someone else sounds to them, not a shared setting.
+const USER_VOLUMES_KEY = 'faradayRoomUserVolumes';
+let savedUserVolumes = {};
+try { savedUserVolumes = JSON.parse(localStorage.getItem(USER_VOLUMES_KEY)) || {}; } catch(e) {}
+function saveUserVolume(name, vol) {
+  if (!name) return;
+  savedUserVolumes[name.trim().toLowerCase()] = vol;
+  try { localStorage.setItem(USER_VOLUMES_KEY, JSON.stringify(savedUserVolumes)); } catch(e) {}
+}
 
 // ══════════ WHISPER ══════════
 // A quick, low-friction private aside between two players — deliberately
@@ -3109,9 +3172,205 @@ function stopWhisper() {
 
 // ══════════ SPATIAL AUDIO ══════════
 function ensureACtx() {
-  if (!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if (!audioCtx) {
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    // If the browser suspends/interrupts the context later on, bring it
+    // straight back — a suspended context silences everything we send.
+    audioCtx.addEventListener('statechange', () => {
+      if (audioCtx.state==='suspended' || audioCtx.state==='interrupted') audioCtx.resume().catch(()=>{});
+    });
+  }
   if (audioCtx.state==='suspended') audioCtx.resume();
 }
+// Any click/keypress is a user gesture that lets a blocked resume() succeed.
+['pointerdown','keydown'].forEach(ev => document.addEventListener(ev, () => {
+  if (audioCtx && audioCtx.state!=='running' && audioCtx.state!=='closed') audioCtx.resume().catch(()=>{});
+}, true));
+
+// ══════════ MIC NOISE GATE ══════════
+// Two people sitting in the same physical room on separate devices means
+// each device's own AEC only cancels ITS OWN speaker output — it has no
+// way to know what a neighboring device's speaker is playing, so a faint
+// pickup of the other person's voice through the air gets re-transmitted,
+// which is what everyone else hears as an echo/double-voice. Better AEC
+// can't fix that (it's not an echo of anything this device itself played);
+// muting the mic whenever nobody's actually talking loud enough is the
+// practical fix. Adjustable per-client (like FOV/volume) since every
+// room's noise floor and mic sensitivity is different.
+const NOISE_GATE_KEY = 'faradayRoomNoiseGate';
+let noiseGateEnabled = true;
+let noiseGateThresholdDb = -45; // dBFS-ish (RMS of a -1..1 signal) — the level below which the mic is gated shut
+try {
+  const savedGate = JSON.parse(localStorage.getItem(NOISE_GATE_KEY));
+  if (savedGate) {
+    if (typeof savedGate.enabled === 'boolean') noiseGateEnabled = savedGate.enabled;
+    if (typeof savedGate.threshold === 'number') noiseGateThresholdDb = savedGate.threshold;
+  }
+} catch(e){}
+function saveNoiseGateSettings() {
+  try{ localStorage.setItem(NOISE_GATE_KEY, JSON.stringify({enabled:noiseGateEnabled, threshold:noiseGateThresholdDb})); }catch(e){}
+}
+
+let gateAnalyser=null, gateGain=null;
+let gateMeterEls=null; // {fill,mark} refs into the currently-open volume panel, or null while it's closed — see renderVolPanel()
+let gateLevelDb=-100, gateOpen=false, gateHoldUntil=0;
+const GATE_ATTACK=0.01;    // seconds — opens fast so a word's onset isn't clipped
+const GATE_RELEASE=0.25;   // seconds — closes slowly so it fades instead of chopping
+const GATE_HOLD_MS=200;    // stays open this long past the last loud moment, so brief pauses mid-sentence don't chatter
+
+// Builds mic → analyser (for the level meter/threshold check) → gain (the
+// actual gate) → a fresh MediaStreamDestination, and returns that
+// destination's track — this is what actually gets published, in place of
+// the raw AEC/ANS/AGC-processed track Agora's own createMicrophoneAudioTrack
+// still captures (that processing runs first; the gate is purely
+// downstream of it, same idea as the tab-audio custom track already used
+// for music, just chained through a gain stage instead of published raw).
+let gateSrcNode=null, gateSrcTrack=null; // the mic source currently feeding the gate, and the MediaStreamTrack it was made from
+
+// (Re)points the gate's input at a mic track. Split out so the health check
+// below can re-wire it if Agora ever hands us a different MediaStreamTrack
+// (it re-captures the device — new track object — after setEnabled(), a
+// device change, etc.); a source node stays glued to the track it was
+// created from, so without this the gate would keep listening to a dead one.
+function connectGateSource(track) {
+  if (gateSrcNode) { try{ gateSrcNode.disconnect(); }catch(e){} }
+  gateSrcNode = audioCtx.createMediaStreamSource(new MediaStream([track]));
+  gateSrcTrack = track;
+  gateSrcNode.connect(gateAnalyser);
+  gateSrcNode.connect(gateGain);
+}
+
+function buildGatedMicTrack(rawMicTrack) {
+  ensureACtx();
+  gateAnalyser = audioCtx.createAnalyser();
+  gateAnalyser.fftSize = 512;
+  gateGain = audioCtx.createGain();
+  gateGain.gain.value = noiseGateEnabled ? 0 : 1; // starts closed if the gate's on — updateNoiseGate() opens it the instant it sees real level
+  const dest = audioCtx.createMediaStreamDestination();
+  gateGain.connect(dest);
+  connectGateSource(rawMicTrack);
+  return dest.stream.getAudioTracks()[0];
+}
+
+// Mute/unmute. When the gate is publishing the voice, the gate IS the mute
+// (updateNoiseGate() zeroes it while micMuted||forceMuted) and the raw mic
+// track is deliberately left alone: calling localAudio.setEnabled() makes
+// Agora stop and re-open the capture device, which hands back a NEW track
+// the gate wasn't connected to — heard as "unmuted, but nobody hears me
+// until I rejoin". Only the no-gate fallback still needs setEnabled().
+function applyMicMute() {
+  if (gatedMicTrack) { updateNoiseGate(); return; }
+  if (localAudio) localAudio.setEnabled(!(micMuted || forceMuted)).catch(()=>{});
+}
+
+// Hands the mic back after a GM force-mute (explicit unmute-all, or the GM's
+// refresh stopped arriving) and restores whatever state the player had before.
+function releaseForceMute() {
+  if (!forceMuted) return;
+  forceMuted = false;
+  micMuted = preForceMuteState;
+  applyMicMute();
+  setMicUI();
+  updateAdMuteState(); // an in-progress ad jingle follows the mute state too
+}
+
+// Replaces a dead (ended) microphone — unplugged/Bluetooth dropout, device
+// sleep — with a fresh one and re-wires the gate to it. Throttled so a
+// permanently missing device doesn't hammer getUserMedia.
+let micRecovering=false, lastMicRecoverAt=0;
+async function recoverMicTrack() {
+  if (micRecovering || performance.now()-lastMicRecoverAt < 5000) return;
+  micRecovering = true; lastMicRecoverAt = performance.now();
+  try {
+    const fresh = await createMicTrack();
+    const old = localAudio;
+    localAudio = fresh;
+    connectGateSource(fresh.getMediaStreamTrack());
+    try{ old && old.close(); }catch(e){}
+  } catch(e) { console.warn('Mikrofon-Wiederherstellung fehlgeschlagen:', e); }
+  micRecovering = false;
+}
+
+// Once a second: keep the voice path alive without anyone having to rejoin.
+// (1) a suspended AudioContext (device change, background, autoplay rules)
+// silences the gate's output entirely; (2) Agora may have swapped the mic
+// track; (3) the track may have ended outright.
+let lastForceMuteMsgAt = 0;
+const FORCE_MUTE_STALE_MS = 45000; // the GM re-sends the state every few seconds; silence for this long = GM gone
+setInterval(() => {
+  if (audioCtx && audioCtx.state !== 'running' && audioCtx.state !== 'closed') audioCtx.resume().catch(()=>{});
+  if (gateGain && localAudio) {
+    const cur = localAudio.getMediaStreamTrack();
+    if (cur && cur !== gateSrcTrack) connectGateSource(cur);
+    else if (cur && cur.readyState === 'ended') recoverMicTrack();
+  }
+  // A force-mute can never outlive its GM: if the GM's periodic refresh
+  // stops arriving (they left, or a message was lost), hand the mic back
+  // instead of leaving the player locked out until they reload.
+  if (forceMuted && performance.now()-lastForceMuteMsgAt > FORCE_MUTE_STALE_MS) releaseForceMute();
+}, 1000);
+
+// Reads the current mic level and opens/closes the gate. Also drives the
+// live level meter in the volume panel while it's open.
+function updateNoiseGate() {
+  if (!gateAnalyser || !gateGain) return;
+  const buf = gateLevelBuf || (gateLevelBuf = new Uint8Array(gateAnalyser.fftSize));
+  gateAnalyser.getByteTimeDomainData(buf);
+  let sumSq = 0;
+  for (let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sumSq += v*v; }
+  const rms = Math.sqrt(sumSq/buf.length);
+  gateLevelDb = rms>0 ? 20*Math.log10(rms) : -100;
+
+  // Mute (manual or GM force-mute) is enforced here directly, not by
+  // relying on localAudio.setEnabled() to silence the signal upstream —
+  // gatedMicTrack is published instead of localAudio, and whether a
+  // disabled source track's silence actually propagates through an
+  // already-connected MediaStreamAudioSourceNode is inconsistent enough
+  // across browsers that it can't be trusted as the real mute mechanism.
+  // Tying it to these two booleans directly means mute/unmute is correct
+  // regardless of what the upstream track does.
+  if (micMuted || forceMuted) {
+    gateGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.03);
+    gateOpen = false;
+  } else if (!noiseGateEnabled) {
+    gateGain.gain.setTargetAtTime(1, audioCtx.currentTime, 0.05);
+    gateOpen = true;
+  } else {
+    const now = performance.now();
+    if (gateLevelDb > noiseGateThresholdDb) {
+      gateOpen = true;
+      gateHoldUntil = now + GATE_HOLD_MS;
+    } else if (now > gateHoldUntil) {
+      gateOpen = false;
+    }
+    gateGain.gain.setTargetAtTime(gateOpen?1:0, audioCtx.currentTime, gateOpen?GATE_ATTACK:GATE_RELEASE);
+  }
+
+  // Meter keeps reading live level regardless of noiseGateEnabled — useful
+  // to see where your voice sits relative to the threshold even with the
+  // gate switched off, e.g. while deciding where to set it.
+  if (gateMeterEls) {
+    const GATE_METER_MIN_DB=-70, GATE_METER_MAX_DB=0;
+    const pct = ((gateLevelDb-GATE_METER_MIN_DB)/(GATE_METER_MAX_DB-GATE_METER_MIN_DB))*100;
+    gateMeterEls.fill.style.width = Math.max(0,Math.min(100,pct))+'%';
+    gateMeterEls.fill.classList.toggle('gate-closed', !gateOpen);
+  }
+}
+let gateLevelBuf = null;
+
+// requestAnimationFrame (what animate() runs on) gets throttled to near-zero
+// or fully suspended once the window is minimized or the tab is hidden long
+// enough — browsers correctly assume nothing needs painting, but this gate
+// sits directly in the live mic's signal path, not just the 3D scene. If it
+// happened to be closed (gain 0) the instant the tab was minimized, relying
+// on animate() alone meant it stayed silently closed for as long as the tab
+// stayed backgrounded — heard as "the sound is just gone" while minimized,
+// even though the call itself was still fully connected. setInterval is
+// throttled while hidden too, but never fully paused like rAF is, so the
+// gate keeps re-evaluating (if more slowly) instead of freezing shut. Safe
+// to run unconditionally from page load — updateNoiseGate() itself no-ops
+// until buildGatedMicTrack() has actually built the graph after joining.
+setInterval(updateNoiseGate, 50);
 
 function wireSpatial(uid, track) {
   ensureACtx();
@@ -3168,9 +3427,13 @@ function wireAmbient(track) {
     const src = audioCtx.createMediaStreamSource(new MediaStream([track.getMediaStreamTrack()]));
     const gain = audioCtx.createGain();
     gain.gain.value = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
+    const volGain = audioCtx.createGain();
+    volGain.gain.value = musicVolume;
     src.connect(gain);
-    gain.connect(audioCtx.destination);
+    gain.connect(volGain);
+    volGain.connect(audioCtx.destination);
     musicGain = gain;
+    musicVolumeGain = volGain;
   } catch(e) {
     console.warn('Ambient audio fallback:', e);
     track.play();
@@ -3209,6 +3472,21 @@ function setUserVolume(uid, vol) {
   if (!u) return;
   u.volume = vol;
   if (u.volGain && audioCtx) u.volGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.05);
+}
+
+// Applies a previously-saved-by-name volume for uid, if there is one and
+// it hasn't already been applied — called from wherever a uid's name
+// becomes known, since that can arrive before OR after their audio graph
+// exists (see wireSpatial's own users[uid].volume ?? 1 fallback, which
+// picks this up for free if the graph hasn't been built yet).
+function applySavedUserVolume(uid, name) {
+  if (!name) return;
+  const saved = savedUserVolumes[name.trim().toLowerCase()];
+  if (saved === undefined) return;
+  const u = users[uid];
+  if (!u) return;
+  if (u.volGain) setUserVolume(uid, saved);
+  else u.volume = saved;
 }
 
 // Called on every client when `fromUid` starts whispering to `toUid`. What
@@ -3431,10 +3709,17 @@ function withTimeout(promise, ms, label) {
 
 // Buffer for position messages that arrive before user-published
 const pendingPos = {};
+// Same idea, for names: a 'name' message can legitimately arrive before
+// this client has finished subscribing to that peer's media (users[uid]
+// doesn't exist yet) — without buffering it, that message was just silently
+// dropped with nothing to ever retry it, leaving some people stuck as
+// 'User-<uid>' (and their saved per-name volume unapplied).
+const pendingName = {};
 
 async function initAgora(appId, room, myName, asDM, token) {
   joinedAppId=appId; joinedRoom=room; joinedToken=token||null; // needed later if the GM starts sharing music
   agoraClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
+  localPublishReady=false;
 
   // Drives the speaking-highlight border in the gallery/PiP tiles — updates
   // the DOM directly rather than re-rendering, since this fires a few
@@ -3475,8 +3760,24 @@ async function initAgora(appId, room, myName, asDM, token) {
       const pz = pendingPos[uid]?.z ?? (Math.random()-.5)*1.5;
       const pyaw = pendingPos[uid]?.yaw ?? 0;
       grp.position.set(px,0,pz);
-      users[uid]={name:'User-'+uid,grp,vidMesh,whisperIcon,targetX:px,targetZ:pz,targetYaw:pyaw};
+      // Same idea as position — a name broadcast can arrive before this
+      // point, so pick up whatever's already buffered instead of starting
+      // at the uid fallback and waiting for a message that already came
+      // and went.
+      const pname = pendingName[uid];
+      users[uid]={name:pname?.name ?? ('User-'+uid),isDM:!!pname?.isDM,grp,vidMesh,whisperIcon,targetX:px,targetZ:pz,targetYaw:pyaw};
       delete pendingPos[uid];
+      delete pendingName[uid];
+      if (pname?.name) applySavedUserVolume(uid, pname.name);
+      // Latecomer gap for names: this client's own sendName() only fired once,
+      // right after it first joined, so anyone who joins later never received
+      // it and would be stuck seeing 'User-<uid>'. Every client re-announces
+      // itself whenever it notices someone new.
+      sendName(myName, asDM);
+      // Same gap, for whispering: if I'm mid-whisper when someone new joins,
+      // they never received the original 'whisper' broadcast that told
+      // everyone else to mute me — re-announce it so they don't hear it.
+      if (whisperTarget) broadcastWhisper(true, whisperTarget);
       // A player who joins after the GM already set a map/tokens never
       // received those original broadcasts — Agora's data channel only
       // reaches clients connected at send time, nothing is replayed for
@@ -3539,8 +3840,10 @@ async function initAgora(appId, room, myName, asDM, token) {
     if(users[ru.uid]?.grp) scene.remove(users[ru.uid].grp);
     delete users[ru.uid];
     delete pendingPos[ru.uid];
+    delete pendingName[ru.uid];
     if(ru.uid===musicUid){
       if(musicGain){ try{musicGain.disconnect();}catch(_){} musicGain=null; }
+      if(musicVolumeGain){ try{musicVolumeGain.disconnect();}catch(_){} musicVolumeGain=null; }
       musicUid=null;
     }
     if(document.getElementById('vol-panel').style.display==='block') renderVolPanel();
@@ -3577,28 +3880,38 @@ async function initAgora(appId, room, myName, asDM, token) {
       if(msg.type==='tokenRemove'){
         removeToken(msg.id, false);
       }
-      if(msg.type==='name'&&users[uid]){
-        users[uid].name=msg.name;
-        users[uid].isDM=!!msg.isDM; // needed so the whisper target list can exclude the GM
+      if(msg.type==='name'){
+        if(users[uid]){
+          users[uid].name=msg.name;
+          users[uid].isDM=!!msg.isDM; // needed so the whisper target list can exclude the GM
+          applySavedUserVolume(uid, msg.name);
+        } else {
+          // This peer's media subscription hasn't finished yet — buffer it,
+          // same as pendingPos, instead of just dropping it on the floor.
+          pendingName[uid]={name:msg.name, isDM:!!msg.isDM};
+        }
       }
       if(msg.type==='whisper'){
         if(msg.active) applyWhisperState(uid, msg.to);
         else clearWhisperState(uid);
       }
       if(msg.type==='forceMute'){
-        if(msg.value && !forceMuted){
-          preForceMuteState = micMuted;
-          forceMuted = true;
-          micMuted = true;
-          if(localAudio) localAudio.setEnabled(false);
-          setMicUI();
-        } else if(!msg.value && forceMuted){
-          forceMuted = false;
-          micMuted = preForceMuteState;
-          if(localAudio) localAudio.setEnabled(!micMuted);
-          setMicUI();
+        // Only players act on this, and only when it really comes from the
+        // GM. The GM re-sends this every few seconds (see mute-all-btn), so
+        // it is idempotent here and a lost message can't leave anyone stuck.
+        if(users[uid]?.isDM || pendingName[uid]?.isDM || uid===undefined){
+          lastForceMuteMsgAt = performance.now();
+          if(msg.value && !forceMuted){
+            preForceMuteState = micMuted;
+            forceMuted = true;
+            micMuted = true;
+            applyMicMute();
+            setMicUI();
+            updateAdMuteState(); // mute-all silences an in-progress ad too
+          } else if(!msg.value && forceMuted){
+            releaseForceMute(); // also refreshes the ad jingle's mute state
+          }
         }
-        updateAdMuteState(); // mute-all silences an in-progress ad too
       }
       if(msg.type==='adTrigger'){
         if(msg.ts!==lastAdTriggerTs){
@@ -3622,24 +3935,27 @@ async function initAgora(appId, room, myName, asDM, token) {
   localUID=Math.floor(Math.random()*900000)+10000;
   await joinWithRetry(appId,room,joinedToken,localUID);
 
-  // getUserMedia can hang indefinitely on some devices/permission states
-  // instead of rejecting. Without a timeout, the join button is stuck on
-  // "Verbinde…" forever with no feedback. If camera+mic together fail or
-  // time out, fall back to mic-only so a camera problem doesn't block
-  // someone from joining at all.
-  try {
-    [localAudio,localVideo]=await withTimeout(
-      AgoraRTC.createMicrophoneAndCameraTracks(
-        {AEC:true,ANS:true,AGC:true},{encoderConfig:'480p_1',facingMode:'user'}),
-      15000, 'Kamera/Mikrofon-Zugriff');
-  } catch(e) {
-    console.warn('Kamera+Mikrofon fehlgeschlagen, versuche nur Mikrofon:', e);
-    localVideo = null;
-    localAudio = await withTimeout(
-      AgoraRTC.createMicrophoneAudioTrack({AEC:true,ANS:true,AGC:true}),
-      12000, 'Mikrofon-Zugriff');
+  // Camera/mic acquisition has its own fallback chain (see acquireLocalMedia):
+  // both together -> each on its own -> join anyway as a listener. getUserMedia
+  // can hang indefinitely on some devices/permission states, hence the
+  // timeouts inside it. Only a failure of the JOIN itself aborts now.
+  await acquireLocalMedia();
+
+  // Publish a gated copy of the mic, not localAudio itself. The gate also
+  // enforces mute (see updateNoiseGate / applyMicMute) — the raw mic track is
+  // deliberately never toggled.
+  if (localAudio) {
+    try {
+      const gatedTrack = buildGatedMicTrack(localAudio.getMediaStreamTrack());
+      gatedMicTrack = await AgoraRTC.createCustomAudioTrack({mediaStreamTrack: gatedTrack, encoderConfig:'speech_standard'});
+    } catch(e) {
+      console.warn('Noise-Gate-Aufbau fehlgeschlagen, sende Mikrofon ungegated:', e);
+      gatedMicTrack = null;
+    }
   }
-  await agoraClient.publish(localVideo ? [localAudio,localVideo] : [localAudio]);
+  const toPublish = [localAudio ? (gatedMicTrack || localAudio) : null, localVideo].filter(Boolean);
+  if (toPublish.length) await agoraClient.publish(toPublish);
+  localPublishReady = true;
 
   // local avatar
   const {grp,vidMesh,whisperIcon}=makeAvatar(asDM);
@@ -3647,13 +3963,7 @@ async function initAgora(appId, room, myName, asDM, token) {
   grp.visible=false;
   users[localUID]={name:myName,grp,vidMesh,whisperIcon,isLocal:true,isDM:asDM};
 
-  try {
-    const vel=document.createElement('video');
-    vel.autoplay=true; vel.muted=true; vel.playsInline=true;
-    vel.srcObject=new MediaStream([localVideo.getMediaStreamTrack()]);
-    vel.play().catch(()=>{});
-    attachVideoToAvatar(users[localUID],vel);
-  }catch(e){}
+  attachLocalVideoEl();
 
   sendName(myName,asDM);
   // Broadcast position frequently — use 50ms for smooth movement
@@ -4147,6 +4457,210 @@ document.getElementById('invite-btn').addEventListener('click', async () => {
   if (msg) document.getElementById('jerr').textContent = msg;
 })();
 
+// ── device selection ──
+// enumerateDevices() (not Agora's getMicrophones) so loading the page never
+// triggers a permission prompt; names only appear once access was granted.
+function chosenDeviceId(selId) { const el = document.getElementById(selId); return (el && el.value) || undefined; }
+async function populateDeviceLists() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const prefs = loadJoinPrefs();
+    [['f-mic','audioinput','Mikrofon','mic'],['f-cam','videoinput','Kamera','cam']].forEach(([id,kind,label,key]) => {
+      const sel = document.getElementById(id); if (!sel) return;
+      const wanted = sel.value || prefs[key] || '';
+      sel.innerHTML = '<option value="">Standard-Gerät</option>';
+      devs.filter(d => d.kind === kind && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications').forEach((d,i) => {
+        const o = document.createElement('option');
+        o.value = d.deviceId; o.textContent = d.label || (label+' '+(i+1));
+        sel.appendChild(o);
+      });
+      if ([...sel.options].some(o => o.value === wanted)) sel.value = wanted;
+    });
+  } catch(e) {}
+}
+['f-mic','f-cam'].forEach(id => document.getElementById(id).addEventListener('change', e => saveJoinPrefs({[id==='f-mic'?'mic':'cam']: e.target.value})));
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', populateDeviceLists);
+populateDeviceLists();
+
+// Chosen device first; if that fails (unplugged since last time, busy), the
+// system default — a stale saved choice must never lock anyone out.
+async function createMicTrack() {
+  const cfg = {AEC:true, ANS:true, AGC:true}, id = chosenDeviceId('f-mic');
+  if (id) { try { return await withTimeout(AgoraRTC.createMicrophoneAudioTrack({...cfg, microphoneId:id}), 12000, 'Mikrofon-Zugriff'); }
+            catch(e) { console.warn('Gewähltes Mikrofon fehlgeschlagen, nehme Standard:', e); } }
+  return withTimeout(AgoraRTC.createMicrophoneAudioTrack(cfg), 12000, 'Mikrofon-Zugriff');
+}
+async function createCamTrack() {
+  const cfg = {encoderConfig:'480p_1', facingMode:'user'}, id = chosenDeviceId('f-cam');
+  if (id) { try { return await withTimeout(AgoraRTC.createCameraVideoTrack({...cfg, cameraId:id}), 12000, 'Kamera-Zugriff'); }
+            catch(e) { console.warn('Gewählte Kamera fehlgeschlagen, nehme Standard:', e); } }
+  return withTimeout(AgoraRTC.createCameraVideoTrack(cfg), 12000, 'Kamera-Zugriff');
+}
+
+// Camera+mic together first (one permission prompt, the proven path); if
+// that fails, each on its own so a broken camera never costs the mic or the
+// other way round — and if even the mic fails the player still gets in
+// (listening) and can retry from the mic button.
+let mediaProblem = '';
+async function acquireLocalMedia() {
+  const audioCfg = {AEC:true, ANS:true, AGC:true}, videoCfg = {encoderConfig:'480p_1', facingMode:'user'};
+  const micId = chosenDeviceId('f-mic'), camId = chosenDeviceId('f-cam');
+  if (micId) audioCfg.microphoneId = micId;
+  if (camId) videoCfg.cameraId = camId;
+  const both = AgoraRTC.createMicrophoneAndCameraTracks(audioCfg, videoCfg);
+  try {
+    [localAudio, localVideo] = await withTimeout(both, 15000, 'Kamera/Mikrofon-Zugriff');
+    return;
+  } catch(e) {
+    console.warn('Kamera+Mikrofon gemeinsam fehlgeschlagen, versuche einzeln:', e);
+    // if the hung request ever completes later, don't leave the devices open
+    both.then(([a,v]) => { try{a.close();}catch(_){} try{v.close();}catch(_){} }, () => {});
+  }
+  localAudio = null; localVideo = null; mediaProblem = '';
+  try { localAudio = await createMicTrack(); }
+  catch(e) { console.warn('Mikrofon fehlgeschlagen:', e); mediaProblem = 'Mikrofon: ' + describeAgoraError(e); }
+  try { localVideo = await createCamTrack(); }
+  catch(e) { console.warn('Kamera fehlgeschlagen:', e); }
+}
+
+let mediaNoticeTimer = null;
+function showMediaNotice(text, ms) {
+  const el = document.getElementById('media-notice'); if (!el) return;
+  el.textContent = text; el.classList.add('show');
+  clearTimeout(mediaNoticeTimer);
+  mediaNoticeTimer = setTimeout(() => el.classList.remove('show'), ms || 10000);
+}
+
+// Mic/camera that failed at join (or appeared later) can be started from the
+// buttons / by plugging the device in — no reload needed.
+let startingMic = false, startingCam = false;
+async function startMicLater() {
+  if (startingMic || localAudio || !agoraClient || !localPublishReady) return;
+  startingMic = true; setMicUI();
+  try {
+    ensureACtx();
+    localAudio = await createMicTrack();
+    const gated = buildGatedMicTrack(localAudio.getMediaStreamTrack());
+    gatedMicTrack = await AgoraRTC.createCustomAudioTrack({mediaStreamTrack: gated, encoderConfig:'speech_standard'});
+    await agoraClient.publish([gatedMicTrack]);
+    micMuted = false;
+    showMediaNotice('Mikrofon aktiv ✓', 3000);
+  } catch(e) {
+    console.warn('Mikrofon später starten fehlgeschlagen:', e);
+    try { if (gatedMicTrack) { gatedMicTrack.close(); } } catch(_) {}
+    try { if (localAudio) { localAudio.close(); } } catch(_) {}
+    gatedMicTrack = null; localAudio = null;
+    showMediaNotice('Mikrofon nicht verfügbar: ' + describeAgoraError(e), 12000);
+  }
+  startingMic = false; setMicUI();
+}
+function attachLocalVideoEl() {
+  if (!localVideo || !users[localUID]) return;
+  try {
+    const vel = document.createElement('video');
+    vel.autoplay = true; vel.muted = true; vel.playsInline = true;
+    vel.srcObject = new MediaStream([localVideo.getMediaStreamTrack()]);
+    vel.play().catch(()=>{});
+    attachVideoToAvatar(users[localUID], vel);
+    users[localUID].videoEl = vel; // reused for the gallery, same as remote users — see the 'user-published' handler
+  } catch(e) {}
+}
+async function startCamLater() {
+  if (startingCam || localVideo || !agoraClient || !localPublishReady) return;
+  startingCam = true; setCamUI();
+  try {
+    localVideo = await createCamTrack();
+    await agoraClient.publish([localVideo]);
+    camOff = false;
+    attachLocalVideoEl();
+    showMediaNotice('Kamera aktiv ✓', 3000);
+  } catch(e) {
+    console.warn('Kamera später starten fehlgeschlagen:', e);
+    try { if (localVideo) localVideo.close(); } catch(_) {}
+    localVideo = null;
+    showMediaNotice('Kamera nicht verfügbar: ' + describeAgoraError(e), 12000);
+  }
+  startingCam = false; setCamUI();
+}
+function setCamUI() {
+  const b = document.getElementById('btn-cam'); if (!b) return;
+  const span = b.querySelector('span');
+  if (!localVideo) { span.textContent = startingCam ? 'Starte …' : 'Kamera starten'; b.classList.add('off'); b.title = 'Keine Kamera aktiv — klicken, um es erneut zu versuchen'; }
+  else { span.textContent = camOff ? 'Cam aus' : 'Kamera'; b.classList.toggle('off', camOff); b.title = ''; }
+}
+// Plugging in / switching on a device while the room is open picks it up.
+try {
+  AgoraRTC.onMicrophoneChanged = info => { populateDeviceLists(); if (info && info.state === 'ACTIVE' && !localAudio) startMicLater(); };
+  AgoraRTC.onCameraChanged     = info => { populateDeviceLists(); if (info && info.state === 'ACTIVE' && !localVideo) startCamLater(); };
+} catch(e) {}
+
+// ══════════ SELF-PREVIEW ══════════
+// Check your own camera/mic before joining — opt-in via a button, not
+// automatic, so loading the page never triggers a surprise permission
+// prompt. Releases the device the instant the real join starts, so
+// Agora's own getUserMedia call isn't fighting this one for the camera.
+(function(){
+  const btn=document.getElementById('preview-btn');
+  const box=document.getElementById('preview-box');
+  const video=document.getElementById('preview-video');
+  const meterFill=document.getElementById('pv-meter-fill');
+  const errEl=document.getElementById('pv-error');
+  let stream=null, ac=null, analyser=null, rafId=null, active=false;
+
+  function stopPreview(){
+    if(rafId!==null){ cancelAnimationFrame(rafId); rafId=null; }
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    if(ac){ ac.close().catch(()=>{}); ac=null; }
+    analyser=null;
+    video.srcObject=null;
+    box.style.display='none';
+    btn.textContent='🎥 Kamera & Mikrofon testen';
+    active=false;
+  }
+
+  function meterTick(){
+    if(!analyser) return;
+    const data=new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    let sum=0; for(let i=0;i<data.length;i++) sum+=data[i];
+    const avg=sum/data.length;
+    // Raw frequency-domain average reads quiet for normal speaking volume —
+    // scaled up so the bar actually moves visibly instead of sitting near 0.
+    meterFill.style.width=Math.min(100,(avg/255)*100*2.2)+'%';
+    rafId=requestAnimationFrame(meterTick);
+  }
+
+  btn.addEventListener('click', async()=>{
+    if(active){ stopPreview(); return; }
+    errEl.textContent='';
+    btn.disabled=true; btn.textContent='Wird angefragt…';
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+      video.srcObject=stream;
+      ac=new (window.AudioContext||window.webkitAudioContext)();
+      const src=ac.createMediaStreamSource(stream);
+      analyser=ac.createAnalyser();
+      analyser.fftSize=256;
+      src.connect(analyser);
+      box.style.display='flex';
+      btn.textContent='Vorschau beenden';
+      populateDeviceLists(); // permission is granted now, so the real device names show up
+      active=true;
+      meterTick();
+    }catch(e){
+      errEl.textContent='Kamera/Mikrofon nicht verfügbar: '+(e.message||'Zugriff verweigert');
+      openAdv(); // device pickers live there
+      btn.textContent='🎥 Kamera & Mikrofon testen';
+    }
+    btn.disabled=false;
+  });
+
+  // Capture phase so this always fires before the join handler starts
+  // acquiring media, regardless of where either listener is registered.
+  document.getElementById('join-btn').addEventListener('click', stopPreview, {capture:true});
+})();
+
 // ══════════ UI EVENTS ══════════
 
 // Character picker — refreshed whenever the URL field is edited or the
@@ -4199,12 +4713,10 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     document.getElementById('hud').style.display='flex';
     document.getElementById('ctrl').style.display='flex';
     document.getElementById('hud-room').textContent='RAUM: '+room.toUpperCase();
-    if(!localVideo){
-      const camBtn=document.getElementById('btn-cam');
-      camBtn.disabled=true; camBtn.classList.add('off');
-      camBtn.querySelector('span').textContent='Keine Kamera';
-      camBtn.title='Kamera nicht verfügbar — nur Mikrofon aktiv';
-    }
+    // Joined without a camera and/or mic? Say so, and the buttons retry.
+    setCamUI(); setMicUI();
+    if(!localAudio) showMediaNotice((mediaProblem||'Kein Mikrofon aktiv')+' — du hörst alle, wirst aber nicht gehört. Der Mic-Button versucht es erneut.', 15000);
+    else if(!localVideo) showMediaNotice('Keine Kamera aktiv — der Kamera-Button versucht es erneut.', 8000);
     if(isDM){
       document.getElementById('gm').style.display='block';
       document.getElementById('btn-music').style.display='flex';
@@ -4234,8 +4746,9 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
   }catch(e){
     console.error(e);
     // release anything acquired before the failure, or the retry meets a busy device
-    for (const t of [localAudio, localVideo]) { try{ if(t){ t.stop(); t.close(); } }catch(_){} }
-    localAudio = null; localVideo = null;
+    localPublishReady = false;
+    for (const t of [gatedMicTrack, localAudio, localVideo]) { try{ if(t){ t.stop(); t.close(); } }catch(_){} }
+    gatedMicTrack = null; localAudio = null; localVideo = null; mediaProblem = '';
     try{ if(agoraClient) await agoraClient.leave(); }catch(_){}
     document.getElementById('join-overlay').style.display='flex';
     btn.disabled=false; btn.textContent='▶ VERBINDEN';
@@ -4247,7 +4760,12 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
 
 function setMicUI(){
   const b=document.getElementById('btn-mic');
-  if(forceMuted){
+  if(!localAudio){
+    // no mic yet (failed at join / unplugged) — the button retries instead of being a dead click
+    b.querySelector('span').textContent=startingMic?'Starte …':'Mikro starten';
+    b.classList.add('off');
+    b.title='Kein Mikrofon aktiv — klicken, um es erneut zu versuchen';
+  } else if(forceMuted){
     b.querySelector('span').textContent='Stumm (GM)';
     b.classList.add('off');
     b.title='Von der Spielleitung stummgeschaltet';
@@ -4258,21 +4776,33 @@ function setMicUI(){
   }
 }
 
-document.getElementById('btn-mic').addEventListener('click',async()=>{
-  if(!localAudio)return;
+document.getElementById('btn-mic').addEventListener('click',()=>{
+  if(!localAudio){ ensureACtx(); startMicLater(); return; }
   if(forceMuted)return; // locked by the GM — cannot self-unmute
   ensureACtx();
-  micMuted=!micMuted; await localAudio.setEnabled(!micMuted);
+  micMuted=!micMuted;
+  applyMicMute();
   setMicUI();
 });
 
+// The GM keeps re-sending the current mute-all state (started on first use),
+// so a player whose single message got lost, or who joins mid-mute, still
+// ends up in the right state — and one who never gets an "unmute" can't be
+// stuck (they also auto-release when these stop arriving, see the 1s timer).
+let forceMuteHeartbeat = null;
+function sendForceMute(){
+  if(!agoraClient) return Promise.resolve();
+  try {
+    return Promise.resolve(agoraClient.sendStreamMessage(
+      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})), true))
+      .catch(e=>console.warn('forceMute broadcast failed:', e));
+  } catch(e) { console.warn('forceMute broadcast failed:', e); return Promise.resolve(); }
+}
 document.getElementById('mute-all-btn').addEventListener('click',async()=>{
   if(!agoraClient)return;
   allMuted=!allMuted;
-  try{
-    await agoraClient.sendStreamMessage(
-      new TextEncoder().encode(JSON.stringify({type:'forceMute',value:allMuted})), true);
-  }catch(e){ console.warn('forceMute broadcast failed:', e); }
+  await sendForceMute();
+  if(!forceMuteHeartbeat) forceMuteHeartbeat = setInterval(sendForceMute, 5000);
   const b=document.getElementById('mute-all-btn');
   b.textContent = allMuted ? '🔊 Stummschaltung aufheben' : '🔇 Alle stummschalten';
   b.classList.toggle('active',allMuted);
@@ -4297,7 +4827,7 @@ document.getElementById('ad-toggle-btn').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-cam').addEventListener('click',async()=>{
-  if(!localVideo)return;
+  if(!localVideo){ startCamLater(); return; }
   camOff=!camOff; await localVideo.setEnabled(!camOff);
   const b=document.getElementById('btn-cam');
   b.querySelector('span').textContent=camOff?'Cam aus':'Kamera';
@@ -4320,9 +4850,102 @@ document.getElementById('btn-tactical').addEventListener('click',()=>{
 
 function renderVolPanel() {
   const list = document.getElementById('vol-list');
-  const entries = Object.entries(users).filter(([,u])=>!u.isLocal);
-  if (!entries.length) { list.innerHTML = '<div class="vol-empty">Niemand sonst im Raum</div>'; return; }
   list.innerHTML = '';
+
+  // Personal music volume — always shown here regardless of who else is in
+  // the room, since it has nothing to do with other players. Multiplies on
+  // top of the existing location-based gate (musicGain), doesn't replace it.
+  const musicRow = document.createElement('div');
+  musicRow.className = 'vol-row';
+  const musicLabel = document.createElement('div');
+  musicLabel.className = 'vol-label';
+  const musicPct = Math.round(musicVolume * 100);
+  const musicNameSpan = document.createElement('span');
+  musicNameSpan.textContent = '🎵 Musik';
+  const musicPctSpan = document.createElement('span');
+  musicPctSpan.textContent = musicPct + '%';
+  musicLabel.appendChild(musicNameSpan); musicLabel.appendChild(musicPctSpan);
+  const musicSlider = document.createElement('input');
+  musicSlider.type='range'; musicSlider.min='0'; musicSlider.max='200'; musicSlider.value=String(musicPct);
+  musicSlider.addEventListener('input', ()=>{
+    musicVolume = musicSlider.value/100;
+    musicPctSpan.textContent = musicSlider.value + '%';
+    if (musicVolumeGain) musicVolumeGain.gain.value = musicVolume;
+    try{ localStorage.setItem(MUSIC_VOLUME_KEY, String(musicVolume)); }catch(e){}
+  });
+  musicRow.appendChild(musicLabel); musicRow.appendChild(musicSlider);
+  list.appendChild(musicRow);
+
+  // Personal mic noise gate — same reasoning as the music row above (own
+  // setting, nothing to do with other players, always shown). Mainly for
+  // two people sitting in the same physical room on separate devices: cuts
+  // the mic below the threshold so bleed from the other person's speaker
+  // doesn't get picked up and re-broadcast as an echo. See updateNoiseGate().
+  const gateRow = document.createElement('div');
+  gateRow.className = 'vol-row';
+  const gateToggleRow = document.createElement('div');
+  gateToggleRow.className = 'gate-toggle-row';
+  const gateLabel = document.createElement('label');
+  gateLabel.textContent = '🚪 Noise-Gate (gegen Echo im selben Raum)';
+  gateLabel.htmlFor = 'gate-enabled-cb';
+  const gateCheckbox = document.createElement('input');
+  gateCheckbox.type = 'checkbox'; gateCheckbox.id = 'gate-enabled-cb';
+  gateCheckbox.checked = noiseGateEnabled;
+  gateToggleRow.appendChild(gateLabel); gateToggleRow.appendChild(gateCheckbox);
+  gateRow.appendChild(gateToggleRow);
+
+  const gateThreshLabel = document.createElement('div');
+  gateThreshLabel.className = 'vol-label';
+  const gateThreshName = document.createElement('span');
+  gateThreshName.textContent = 'Empfindlichkeit';
+  const gateThreshVal = document.createElement('span');
+  gateThreshVal.textContent = Math.round(noiseGateThresholdDb) + ' dB';
+  gateThreshLabel.appendChild(gateThreshName); gateThreshLabel.appendChild(gateThreshVal);
+  gateRow.appendChild(gateThreshLabel);
+
+  const gateSlider = document.createElement('input');
+  gateSlider.type='range'; gateSlider.min='-70'; gateSlider.max='-20'; gateSlider.step='1';
+  gateSlider.value = String(Math.round(noiseGateThresholdDb));
+  gateRow.appendChild(gateSlider);
+
+  const gateMeter = document.createElement('div');
+  gateMeter.className = 'gate-meter';
+  const gateMeterFill = document.createElement('div');
+  gateMeterFill.className = 'gate-meter-fill';
+  const gateMeterMark = document.createElement('div');
+  gateMeterMark.className = 'gate-meter-mark';
+  gateMeter.appendChild(gateMeterFill); gateMeter.appendChild(gateMeterMark);
+  gateRow.appendChild(gateMeter);
+  list.appendChild(gateRow);
+
+  // Cache these for updateNoiseGate() to drive live, without re-rendering
+  // the whole panel every frame — cleared on close so a stale reference to
+  // a detached element (from #vol-list.innerHTML='' next render) never
+  // lingers.
+  gateMeterEls = {fill:gateMeterFill, mark:gateMeterMark};
+  const GATE_METER_MIN_DB=-70, GATE_METER_MAX_DB=0;
+  const markPct = ((noiseGateThresholdDb-GATE_METER_MIN_DB)/(GATE_METER_MAX_DB-GATE_METER_MIN_DB))*100;
+  gateMeterMark.style.left = Math.max(0,Math.min(100,markPct))+'%';
+
+  gateCheckbox.addEventListener('change', ()=>{
+    noiseGateEnabled = gateCheckbox.checked;
+    saveNoiseGateSettings();
+  });
+  gateSlider.addEventListener('input', ()=>{
+    noiseGateThresholdDb = Number(gateSlider.value);
+    gateThreshVal.textContent = Math.round(noiseGateThresholdDb) + ' dB';
+    const pct = ((noiseGateThresholdDb-GATE_METER_MIN_DB)/(GATE_METER_MAX_DB-GATE_METER_MIN_DB))*100;
+    gateMeterMark.style.left = Math.max(0,Math.min(100,pct))+'%';
+    saveNoiseGateSettings();
+  });
+
+  const entries = Object.entries(users).filter(([,u])=>!u.isLocal);
+  if (!entries.length) {
+    const empty=document.createElement('div');
+    empty.className='vol-empty'; empty.textContent='Niemand sonst im Raum';
+    list.appendChild(empty);
+    return;
+  }
   entries.forEach(([uid,u])=>{
     const pct = Math.round((u.volume ?? 1) * 100);
     const row = document.createElement('div');
@@ -4339,6 +4962,7 @@ function renderVolPanel() {
     slider.addEventListener('input', ()=>{
       setUserVolume(uid, slider.value/100);
       pctSpan.textContent = slider.value + '%';
+      saveUserVolume(u.name, slider.value/100);
     });
     row.appendChild(label); row.appendChild(slider);
     list.appendChild(row);
@@ -4346,7 +4970,7 @@ function renderVolPanel() {
 }
 document.getElementById('btn-vol').addEventListener('click',()=>{
   const panel=document.getElementById('vol-panel');
-  if (panel.style.display==='block') { panel.style.display='none'; }
+  if (panel.style.display==='block') { panel.style.display='none'; gateMeterEls=null; }
   else { renderVolPanel(); panel.style.display='block'; }
 });
 
@@ -4476,6 +5100,7 @@ document.getElementById('token-file').addEventListener('change', async(e)=>{
 
 document.getElementById('btn-leave').addEventListener('click',async()=>{
   try{
+    if(gatedMicTrack){gatedMicTrack.stop();gatedMicTrack.close();}
     if(localAudio){localAudio.stop();localAudio.close();}
     if(localVideo){localVideo.stop();localVideo.close();}
     if(screenAudio){screenAudio.stop();screenAudio.close();}
