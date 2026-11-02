@@ -129,6 +129,9 @@ body.locked #crosshair{opacity:1}
 /* Shown briefly when joined without a mic/camera, or after a retry */
 #media-notice{position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:600;max-width:90vw;padding:8px 18px;font-size:11px;letter-spacing:1.5px;color:#f3d9a0;background:rgba(36,24,10,.94);border:1px solid rgba(217,138,61,.6);pointer-events:none;opacity:0;transition:opacity .3s;text-align:center}
 #media-notice.show{opacity:1}
+/* Connection lost / reconnecting banner (see NETWORK RESILIENCE) */
+#net-banner{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:600;padding:8px 18px;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#ffd2d8;background:rgba(40,12,16,.92);border:1px solid rgba(201,68,86,.7);box-shadow:0 0 18px rgba(201,68,86,.35);pointer-events:none;opacity:0;transition:opacity .3s;white-space:nowrap}
+#net-banner.show{opacity:1}
 
 /* GM PANEL */
 #gm{position:fixed;right:24px;top:70px;width:270px;background:rgba(6,9,11,.97);border:1px solid rgba(217,138,61,.28);z-index:200;backdrop-filter:blur(10px)}
@@ -343,6 +346,7 @@ canvas{display:block}
 </div>
 
 <div id="media-notice"></div>
+<div id="net-banner"></div>
 <canvas id="c"></canvas>
 <div id="crosshair"></div>
 
@@ -3028,9 +3032,172 @@ function makeAvatar(asDM) {
 }
 
 function attachVideoToAvatar(user, videoEl) {
+  // Called again on every reconnect/republish over a long session (mic/cam
+  // toggles, a dropped wifi coming back) — the old texture+material aren't
+  // just replaced in JS, they hold onto real GPU memory that Three.js never
+  // frees on its own. Without disposing them here, a 6-hour session with a
+  // handful of reconnects across several players slowly leaks VRAM.
+  if (user.vidMesh.material) {
+    if (user.vidMesh.material.map) user.vidMesh.material.map.dispose();
+    user.vidMesh.material.dispose();
+  }
   const tex=new THREE.VideoTexture(videoEl);
   tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
   user.vidMesh.material=new THREE.MeshBasicMaterial({map:tex,side:THREE.DoubleSide});
+}
+
+// Re-points the local preview <video> at whatever the local camera track's
+// current MediaStreamTrack actually is. Needed after any setEnabled(false)
+// -> setEnabled(true) cycle (Agora restarts the capture device rather than
+// just toggling a black-frame flag), since the preview element was pointed
+// at a snapshot MediaStream that never learns about the new track on its
+// own. Used by the manual camera button and the camera self-heal below.
+function refreshLocalVideoPreview() {
+  if (!localVideo || !users[localUID]?.videoEl) return;
+  const vel = users[localUID].videoEl;
+  vel.srcObject = new MediaStream([localVideo.getMediaStreamTrack()]);
+  vel.play().catch(()=>{});
+}
+
+// Attaches (or re-attaches) one remote user's video — shared by the normal
+// 'user-published' event handler and resumeVideoForVisibility() below, so
+// there's exactly one implementation of "what a live remote video looks
+// like" regardless of which one triggered the (re)subscribe.
+function attachRemoteVideo(uid, ru) {
+  if (!users[uid]) return;
+  users[uid].videoTrack = ru.videoTrack;
+  try {
+    // Same reconnect scenario as attachVideoToAvatar's dispose above — the
+    // old <video> element is about to be orphaned. It's never in the DOM,
+    // so it won't leak visibly, but a detached element with a live
+    // srcObject can keep decoding in the background until GC gets to it,
+    // which isn't guaranteed to be prompt. Stop it explicitly.
+    if (users[uid].videoEl) { users[uid].videoEl.pause(); users[uid].videoEl.srcObject=null; }
+    const vel=document.createElement('video');
+    vel.autoplay=true; vel.muted=true; vel.playsInline=true;
+    vel.srcObject=new MediaStream([ru.videoTrack.getMediaStreamTrack()]);
+    vel.play().catch(()=>{});
+    attachVideoToAvatar(users[uid],vel);
+    users[uid].videoEl=vel; // reused directly for the focus overlay, not just the 3D texture
+    if (focusedUid===uid) setFocus(uid); // pick up mid-focus if their video just (re)connected
+    renderPip(); if (galleryOpen) renderGallery(); // this user's tile only exists once videoEl is set
+  } catch(e){}
+}
+
+// Undoes attachRemoteVideo — shared by the normal 'user-unpublished' event
+// handler and pauseVideoForVisibility() below.
+function detachRemoteVideo(uid) {
+  if (!users[uid]) return;
+  users[uid].vidMesh.material=new THREE.MeshBasicMaterial({color:0x111111,side:THREE.DoubleSide});
+}
+
+// ══════════ VISIBILITY-DRIVEN VIDEO PAUSE ══════════
+// Minimizing the window (or just switching to another tab/app, e.g. the GM
+// checking a Word document) means nothing video-related is actually visible
+// — the 3D scene already stops rendering on its own once
+// requestAnimationFrame gets suspended, but decoding everyone else's camera
+// feed keeps running regardless and is a heavy ongoing cost. Pausing it here
+// is purely a local subscription choice — it never touches microphone
+// capture, the noise gate, remote audio playback, or music, and deliberately
+// NEVER touches your OWN camera: you stay visible to everyone else while
+// tabbed out (the GM mostly works in other windows during a session).
+let videoAutoPaused = false;      // are we currently in an auto-paused-for-visibility state?
+
+async function pauseVideoForVisibility() {
+  if (videoAutoPaused || !agoraClient) return;
+  videoAutoPaused = true;
+
+  for (const ru of agoraClient.remoteUsers) {
+    if (ru.uid >= MUSIC_UID_OFFSET || !ru.videoTrack) continue; // music never has video; skip anyone we're not even subscribed to
+    try { await agoraClient.unsubscribe(ru, 'video'); } catch(e) {}
+    detachRemoteVideo(ru.uid);
+  }
+}
+
+async function resumeVideoForVisibility() {
+  if (!videoAutoPaused || !agoraClient) return;
+  videoAutoPaused = false;
+
+  // Checked against ru.hasVideo (their actual current publish state), not
+  // "whoever we paused" — covers both people who were already publishing
+  // when we minimized AND anyone who started publishing while we were
+  // hidden (the 'user-published' handler skips subscribing to new video
+  // while hidden, precisely so this is the one place that catches up).
+  for (const ru of agoraClient.remoteUsers) {
+    if (ru.uid >= MUSIC_UID_OFFSET || !ru.hasVideo || ru.videoTrack) continue;
+    try {
+      await agoraClient.subscribe(ru, 'video');
+      attachRemoteVideo(ru.uid, ru);
+    } catch(e) {}
+  }
+}
+
+// Pause and resume must never run at the same time: with a quick tab-out and
+// back, resume used to subscribe someone while the pause loop was still
+// working through its list, which then unsubscribed them again — leaving that
+// person's video black with nothing left to bring it back. Chaining them on
+// one queue (each step re-reads document.hidden when it actually runs) makes
+// the final state always match whether the page is visible right now.
+let visQueue = Promise.resolve();
+document.addEventListener('visibilitychange', () => {
+  visQueue = visQueue
+    .then(() => document.hidden ? pauseVideoForVisibility() : resumeVideoForVisibility())
+    .catch(()=>{});
+});
+
+// Self-heal for remote cameras: anyone who is publishing video while the
+// page is visible and un-paused but I have no live video for (a subscribe
+// that failed silently, a lost event) gets re-subscribed. Runs from the
+// periodic health check in setupNetworkResilience; no-op when everything is
+// fine.
+const remoteVideoBusy = new Set();
+async function ensureRemoteVideos() {
+  if (!agoraClient || document.hidden || videoAutoPaused) return;
+  for (const ru of agoraClient.remoteUsers) {
+    if (ru.uid >= MUSIC_UID_OFFSET || !ru.hasVideo || !users[ru.uid]) continue;
+    const missingTrack = !ru.videoTrack;
+    const detached = ru.videoTrack && users[ru.uid].videoTrack !== ru.videoTrack;
+    if (!missingTrack && !detached) continue;
+    if (remoteVideoBusy.has(ru.uid)) continue;
+    remoteVideoBusy.add(ru.uid);
+    try {
+      if (missingTrack) await agoraClient.subscribe(ru, 'video');
+      attachRemoteVideo(ru.uid, ru);
+    } catch(e) { console.warn('Video-Wiederherstellung fehlgeschlagen für', ru.uid, e); }
+    remoteVideoBusy.delete(ru.uid);
+  }
+}
+
+// Self-heal for MY camera: the manual fix people found (switch the camera
+// off and on) restarts the capture + encoder. Do that automatically when the
+// capture track has ended/stalled, or when the encoder demonstrably stopped
+// sending frames after having sent some — rate-limited, and skipped while
+// the camera is deliberately off or being toggled by hand.
+let camRecovering = false, camBusy = false, lastCamRecoverAt = 0, camBadChecks = 0, camSentFramesBefore = false;
+async function recoverCamera() {
+  if (camRecovering || !localVideo || camOff) return;
+  camRecovering = true; lastCamRecoverAt = performance.now();
+  try {
+    await localVideo.setEnabled(false);
+    await localVideo.setEnabled(true);
+    refreshLocalVideoPreview();
+  } catch(e) { console.warn('Kamera-Wiederherstellung fehlgeschlagen:', e); }
+  camSentFramesBefore = false; camBadChecks = 0;
+  camRecovering = false;
+}
+function checkLocalCamera() {
+  if (!localVideo || camOff || camBusy || camRecovering || !agoraClient) return;
+  const t = localVideo.getMediaStreamTrack();
+  let bad = !t || t.readyState === 'ended' || (t.muted && !document.hidden);
+  try {
+    const s = agoraClient.getLocalVideoStats();
+    if (s && typeof s.sendFrameRate === 'number') {
+      if (s.sendFrameRate > 0) camSentFramesBefore = true;
+      else if (camSentFramesBefore && (agoraClient.localTracks||[]).includes(localVideo)) bad = true;
+    }
+  } catch(e) {}
+  camBadChecks = bad ? camBadChecks+1 : 0;
+  if (camBadChecks >= 3 && performance.now()-lastCamRecoverAt > 15000) recoverCamera();
 }
 
 // Toggle the on-screen focus overlay for one remote user. Pass null to
@@ -3716,10 +3883,118 @@ const pendingPos = {};
 // 'User-<uid>' (and their saved per-name volume unapplied).
 const pendingName = {};
 
+// The GM's client is the source of truth for shared table state. Agora's data
+// channel never replays history, so this is re-sent whenever someone could
+// have missed it: a newcomer joins, someone reconnects, or a client asks
+// ('needSync') after its own connection dropped. Rate-limited so several
+// triggers at once (a whole group reconnecting) collapse into one resend.
+let lastDmResyncAt = 0;
+function dmResyncRoom() {
+  if (!isDM || !agoraClient) return;
+  const now = performance.now();
+  if (now - lastDmResyncAt < 1500) return;
+  lastDmResyncAt = now;
+  if (currentMapUrl) broadcastMap(currentMapUrl);
+  Object.entries(tokens).forEach(([id,t])=>{
+    broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size}, true);
+  });
+  if (forceMuteHeartbeat) sendForceMute(); // a latecomer/reconnecter must not miss a running mute-all
+}
+
+// ══════════ NETWORK RESILIENCE ══════════
+// Agora reconnects by itself through short drops, but the app also has to
+// cope with: a long outage (the SDK gives up → DISCONNECTED and nothing
+// rejoins), tracks that didn't come back after a rejoin, and state messages
+// that were sent while this client was offline. Everything here is a no-op
+// on a healthy connection.
+let netLeaving = false, netRejoining = false, netLost = false, lastPublishCheckAt = 0, publishing = false;
+let netBannerEl = null;
+function showNetBanner(text) {
+  if (!netBannerEl) netBannerEl = document.getElementById('net-banner');
+  if (!netBannerEl) return;
+  if (text) { netBannerEl.textContent = text; netBannerEl.classList.add('show'); }
+  else netBannerEl.classList.remove('show');
+}
+
+// Re-publishes whichever of my own tracks the client no longer lists as
+// published (after a manual rejoin they all need it; after Agora's own
+// reconnect normally none do). Never double-publishes.
+async function ensureLocalTracksPublished() {
+  if (!localPublishReady || !agoraClient || publishing || agoraClient.connectionState !== 'CONNECTED') return;
+  const want = [gatedMicTrack || localAudio, localVideo].filter(Boolean);
+  const have = agoraClient.localTracks || [];
+  const missing = want.filter(t => !have.includes(t));
+  if (!missing.length) return;
+  publishing = true;
+  try { await agoraClient.publish(missing); }
+  catch(e) { console.warn('Erneutes Veröffentlichen fehlgeschlagen:', e); }
+  publishing = false;
+}
+
+async function rejoinLoop(client, appId, room, token) {
+  if (netRejoining || netLeaving) return;
+  netRejoining = true;
+  let delay = 2000;
+  while (!netLeaving && client === agoraClient && client.connectionState === 'DISCONNECTED') {
+    try { await client.join(appId, room, token, localUID); break; }
+    catch(e) {
+      console.warn('Wiederverbinden fehlgeschlagen, neuer Versuch:', e);
+      await sleepMs(delay); delay = Math.min(delay*1.5, 15000);
+    }
+  }
+  netRejoining = false;
+}
+
+// After the connection is back: make sure my tracks are live and everyone
+// (and I) get back in step, since reliable messages sent while this client
+// was offline are simply gone.
+function afterReconnect(myName, asDM) {
+  ensureACtx();
+  ensureLocalTracksPublished();
+  sendName(myName, asDM);
+  if (whisperTarget) broadcastWhisper(true, whisperTarget);
+  if (isDM) dmResyncRoom();
+  else broadcastToken({type:'needSync'}, true); // ask the GM to resend map/tokens/mute state
+}
+
+function setupNetworkResilience(appId, room, token, myName, asDM) {
+  const client = agoraClient; // events from an abandoned/older client (failed join, retry) must not drive the new one
+  const live = () => !netLeaving && localPublishReady && client === agoraClient;
+  client.on('connection-state-change', (cur, prev) => {
+    if (!live()) return;
+    if (cur === 'RECONNECTING') { netLost = true; showNetBanner('⚠ Verbindung instabil — verbinde neu …'); }
+    else if (cur === 'DISCONNECTED') { netLost = true; showNetBanner('⚠ Verbindung verloren — versuche erneut …'); rejoinLoop(client, appId, room, token); }
+    else if (cur === 'CONNECTED') {
+      showNetBanner(null);
+      if (netLost) { netLost = false; afterReconnect(myName, asDM); }
+    }
+  });
+  window.addEventListener('offline', () => { if (live()) showNetBanner('⚠ Kein Internet — warte auf Verbindung …'); });
+  window.addEventListener('online', () => {
+    if (!live()) return;
+    if (client.connectionState === 'DISCONNECTED') rejoinLoop(client, appId, room, token);
+    else if (client.connectionState === 'CONNECTED') showNetBanner(null);
+  });
+  // Safety net on a 1s timer: if I'm connected but one of my tracks isn't
+  // actually published (a failed republish, a dropped track), fix it; also
+  // runs the camera self-heal checks.
+  const safety = setInterval(() => {
+    if (client !== agoraClient || netLeaving) { clearInterval(safety); return; }
+    if (!localPublishReady || client.connectionState !== 'CONNECTED') return;
+    const now = performance.now();
+    if (now - lastPublishCheckAt < 4000) return;
+    lastPublishCheckAt = now;
+    ensureLocalTracksPublished();
+    checkLocalCamera();
+    ensureRemoteVideos();
+  }, 1000);
+}
+
 async function initAgora(appId, room, myName, asDM, token) {
   joinedAppId=appId; joinedRoom=room; joinedToken=token||null; // needed later if the GM starts sharing music
   agoraClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
-  localPublishReady=false;
+  localPublishReady=false; netLeaving=false; netLost=false;
+  setupNetworkResilience(appId, room, joinedToken, myName, asDM);
 
   // Drives the speaking-highlight border in the gallery/PiP tiles — updates
   // the DOM directly rather than re-rendering, since this fires a few
@@ -3733,9 +4008,18 @@ async function initAgora(appId, room, myName, asDM, token) {
   });
 
   agoraClient.on('user-published', async (ru, mediaType) => {
+    // Stay unsubscribed from new video while minimized/hidden — audio always
+    // subscribes normally regardless. resumeVideoForVisibility() catches up
+    // on whatever's actually publishing (checked against ru.hasVideo) once
+    // the tab is visible again, so this isn't a permanent miss, just a defer.
+    if (mediaType==='video' && document.hidden) return;
     try {
       await agoraClient.subscribe(ru, mediaType);
     } catch(e) {
+      // Without this, a single failed subscribe (e.g. a transient network
+      // hiccup) throws inside the event handler, is silently swallowed by
+      // the SDK's event emitter, and that one track just never connects —
+      // with nothing in the console pointing at why.
       console.warn('subscribe failed for uid', ru.uid, mediaType, e);
       return;
     }
@@ -3782,27 +4066,12 @@ async function initAgora(appId, room, myName, asDM, token) {
       // received those original broadcasts — Agora's data channel only
       // reaches clients connected at send time, nothing is replayed for
       // latecomers. Re-announcing on every new join covers that gap.
-      if (isDM) {
-        if (currentMapUrl) broadcastMap(currentMapUrl);
-        Object.entries(tokens).forEach(([id,t])=>{
-          broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size}, true);
-        });
-      }
+      if (isDM) dmResyncRoom();
       if (document.getElementById('vol-panel').style.display==='block') renderVolPanel();
       renderPip();
     }
     if (mediaType==='video') {
-      users[uid].videoTrack=ru.videoTrack;
-      try {
-        const vel=document.createElement('video');
-        vel.autoplay=true; vel.muted=true; vel.playsInline=true;
-        vel.srcObject=new MediaStream([ru.videoTrack.getMediaStreamTrack()]);
-        vel.play().catch(()=>{});
-        attachVideoToAvatar(users[uid],vel);
-        users[uid].videoEl=vel;
-        if (focusedUid===uid) setFocus(uid);
-        renderPip(); if (galleryOpen) renderGallery(); // this user's tile only exists once videoEl is set
-      } catch(e){}
+      attachRemoteVideo(uid, ru);
     }
     if (mediaType==='audio') {
       ensureACtx();
@@ -3819,8 +4088,7 @@ async function initAgora(appId, room, myName, asDM, token) {
   });
 
   agoraClient.on('user-unpublished',(ru,mt)=>{
-    if(mt==='video'&&users[ru.uid])
-      users[ru.uid].vidMesh.material=new THREE.MeshBasicMaterial({color:0x111111,side:THREE.DoubleSide});
+    if(mt==='video') detachRemoteVideo(ru.uid);
     if(mt==='audio'&&users[ru.uid]){
       if (users[ru.uid].panner) { try{users[ru.uid].panner.disconnect();}catch(_){} }
       if (users[ru.uid].panGain) { try{users[ru.uid].panGain.disconnect();}catch(_){} }
@@ -3895,6 +4163,7 @@ async function initAgora(appId, room, myName, asDM, token) {
         if(msg.active) applyWhisperState(uid, msg.to);
         else clearWhisperState(uid);
       }
+      if(msg.type==='needSync' && isDM){ dmResyncRoom(); }
       if(msg.type==='forceMute'){
         // Only players act on this, and only when it really comes from the
         // GM. The GM re-sends this every few seconds (see mute-all-btn), so
@@ -4746,7 +5015,7 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
   }catch(e){
     console.error(e);
     // release anything acquired before the failure, or the retry meets a busy device
-    localPublishReady = false;
+    netLeaving = true; localPublishReady = false; // the leave below fires DISCONNECTED — must not trigger an auto-rejoin
     for (const t of [gatedMicTrack, localAudio, localVideo]) { try{ if(t){ t.stop(); t.close(); } }catch(_){} }
     gatedMicTrack = null; localAudio = null; localVideo = null; mediaProblem = '';
     try{ if(agoraClient) await agoraClient.leave(); }catch(_){}
@@ -4828,10 +5097,14 @@ document.getElementById('ad-toggle-btn').addEventListener('click', async () => {
 
 document.getElementById('btn-cam').addEventListener('click',async()=>{
   if(!localVideo){ startCamLater(); return; }
-  camOff=!camOff; await localVideo.setEnabled(!camOff);
+  camBusy=true; // keep the self-heal from fighting a manual toggle
+  camOff=!camOff;
+  try { await localVideo.setEnabled(!camOff); } catch(e) { console.warn('Kamera umschalten fehlgeschlagen:', e); }
+  camBusy=false; camBadChecks=0; camSentFramesBefore=false;
   const b=document.getElementById('btn-cam');
   b.querySelector('span').textContent=camOff?'Cam aus':'Kamera';
   b.classList.toggle('off',camOff);
+  if (!camOff) refreshLocalVideoPreview();
 });
 
 document.getElementById('btn-audiomode').addEventListener('click',()=>{
@@ -5099,6 +5372,7 @@ document.getElementById('token-file').addEventListener('change', async(e)=>{
 });
 
 document.getElementById('btn-leave').addEventListener('click',async()=>{
+  netLeaving = true; // the leave below fires DISCONNECTED — must not trigger an auto-rejoin
   try{
     if(gatedMicTrack){gatedMicTrack.stop();gatedMicTrack.close();}
     if(localAudio){localAudio.stop();localAudio.close();}
