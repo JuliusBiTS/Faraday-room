@@ -773,6 +773,11 @@ let armoryGlowMesh;
 let reactorGlowMesh; // north-wall map screen's own edge trim — pulses in animate() alongside the west wall's warm accent for visual cohesion, unrelated to buildArmoryWall itself
 let alarmLevelDisplayed = 0; // smoothly-interpolated 0-3 float, see updateAlarmAmbiance
 let alarmBeaconGroup, alarmBeaconMesh, alarmBeaconLight;
+// Switched off: a nice gimmick, but not needed, and the second full-scene
+// render it needs every frame is the most expensive single thing in the
+// frame (it competes with the audio for the same machine). Set to true to
+// bring the CCTV monitor back — nothing else needs to change.
+const ENABLE_SECURITY_CAM = false;
 let securityCamCamera, securityCamTarget; // fixed second camera + render-target texture for the wall monitor's CCTV-style feed, see buildSecurityCam
 let doorWallInfo; // east-wall doorway to the hidden side room — used for the movement passage and the audio-isolation boundary
 let tacticalView = false; // fixed bird's-eye camera over the table, for precise token placement
@@ -2708,7 +2713,7 @@ function buildBlastDoor() {
   }
 
   buildBillboard(w);
-  buildSecurityCam(w);
+  if (ENABLE_SECURITY_CAM) buildSecurityCam(w);
 }
 
 // A small CCTV-style wall monitor mounted above the billboard, fed by a
@@ -2850,16 +2855,26 @@ function updateBillboard(dt) {
   const useOverride = billboardOverride && billboardOverride.slot === slot;
   const cur = useOverride ? billboardOverride.cur : billboardPick(slot);
   const next = useOverride ? billboardOverride.next : billboardPick(slot+1);
+  // Redraw (and re-upload the texture to the GPU) only when the picture would
+  // actually change: while holding an ad that is almost always never — the ad
+  // sits there for minutes. Doing this every frame cost a full-size canvas
+  // draw + texture upload ~60x/second for nothing, which competes with the
+  // audio for the same main thread/GPU. The key also covers "image finished
+  // loading", so a late-loading ad still appears.
+  const fading = t > BILLBOARD_HOLD_S && next;
+  const fadeT = fading ? Math.min(1, (t-BILLBOARD_HOLD_S)/BILLBOARD_FADE_S) : 0;
+  const imgCur = cur ? billboardImg(cur) : null, imgNext = fading ? billboardImg(next) : null;
+  const key = cur+'|'+(imgCur&&imgCur.complete?1:0)+'|'+(fading ? next+'|'+fadeT.toFixed(3)+'|'+(imgNext.complete?1:0) : '-');
+  if (key === billboardDrawKey) return;
+  billboardDrawKey = key;
   const W = billboardCanvas.width, H = billboardCanvas.height;
   const ctx = billboardCtx;
   ctx.fillStyle = '#050505'; ctx.fillRect(0,0,W,H);
-  if (cur) drawAdContain(ctx, billboardImg(cur), W, H, 1);
-  if (t > BILLBOARD_HOLD_S && next) {
-    const fadeT = Math.min(1, (t-BILLBOARD_HOLD_S)/BILLBOARD_FADE_S);
-    drawAdContain(ctx, billboardImg(next), W, H, fadeT);
-  }
+  if (cur) drawAdContain(ctx, imgCur, W, H, 1);
+  if (fading) drawAdContain(ctx, imgNext, W, H, fadeT);
   billboardTexture.needsUpdate = true;
 }
+let billboardDrawKey = null;
 
 // Runner ID-badge frames — chrome/neon-edge holo-frames on the four
 // chamfer walls (NE/SE/SW/NW), one per player slot. Load from portraits/ so
@@ -3519,6 +3534,7 @@ function ensureACtx() {
 // Any click/keypress is a user gesture that lets a blocked resume() succeed.
 ['pointerdown','keydown'].forEach(ev => document.addEventListener(ev, () => {
   if (audioCtx && audioCtx.state!=='running' && audioCtx.state!=='closed') audioCtx.resume().catch(()=>{});
+  if (typeof radio !== 'undefined' && radio.ac && radio.ac.state!=='running' && radio.ac.state!=='closed') radio.ac.resume().catch(()=>{}); // the Funk player's own context
 }, true));
 
 // ══════════ MIC NOISE GATE ══════════
@@ -4048,6 +4064,8 @@ function animate() {
   // includes the wall monitor sampling that same target) runs normally
   // against the player's own camera. setRenderTarget(null) restores the
   // default framebuffer so the main pass actually reaches the screen.
+  // (Never runs while ENABLE_SECURITY_CAM is off: the camera and target are
+  // then never created.)
   if (securityCamCamera && securityCamTarget) {
     renderer.setRenderTarget(securityCamTarget);
     renderer.render(scene, securityCamCamera);
@@ -4838,7 +4856,7 @@ function closeBannerAd() {
 // clipping and a quiet noise bed that only sounds while a file is playing.
 const radio = {
   list: [], idx: -1, loadedIdx: -1,
-  audio: null, ctxReady: false,
+  audio: null, ctxReady: false, ac: null,
   src: null, dry: null, wet: null, level: null, comp: null, dest: null, mon: null, noiseGain: null,
   client: null, track: null, joining: null, leaveTimer: null,
   fx: false, seeking: false,
@@ -4850,8 +4868,21 @@ function radioStatus(t) { radioEl('radio-status').textContent = t; }
 
 function radioBuildGraph() {
   if (radio.ctxReady) return;
-  ensureACtx();
-  const ac = audioCtx;
+  // The player gets its OWN audio context instead of sharing the room's. The
+  // room's context is tuned for low latency (small buffer) because it carries
+  // live voices, and that small buffer is exactly what breaks up into micro
+  // stutters when the page is busy rendering. A file player has no such
+  // need, so it asks for a large buffer (0.2 s hint; Chrome grants ~170 ms,
+  // vs ~10 ms for the room's context and ~20 ms for the 'playback' preset) —
+  // smoothness over latency: the GM hears a file a fraction of a second after
+  // pressing play, nothing changes for the players. It also asks for 48 kHz,
+  // which is what Agora encodes at, so there is no resampling step either.
+  // The room's voice chat is untouched.
+  try { radio.ac = new (window.AudioContext||window.webkitAudioContext)({latencyHint:0.2, sampleRate:48000}); }
+  catch(e) { radio.ac = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'playback'}); }
+  radio.ac.addEventListener('statechange', () => { if (radio.ac.state==='suspended' || radio.ac.state==='interrupted') radio.ac.resume().catch(()=>{}); });
+  if (radio.ac.state==='suspended') radio.ac.resume().catch(()=>{});
+  const ac = radio.ac;
   radio.audio = new Audio();
   radio.audio.preload = 'auto';
   radio.src = ac.createMediaElementSource(radio.audio);
@@ -4908,7 +4939,7 @@ function radioBuildGraph() {
 // effect on/off: crossfade the dry and effect branches; noise only while playing
 function radioApplyFx() {
   if (!radio.ctxReady) return;
-  const t = audioCtx.currentTime;
+  const t = radio.ac.currentTime;
   radio.dry.gain.setTargetAtTime(radio.fx ? 0 : 1, t, 0.05);
   radio.wet.gain.setTargetAtTime(radio.fx ? 1 : 0, t, 0.05);
   radioNoiseUpdate();
@@ -4916,7 +4947,7 @@ function radioApplyFx() {
 function radioNoiseUpdate() {
   if (!radio.ctxReady) return;
   const on = radio.fx && !radio.audio.paused && !radio.audio.ended;
-  radio.noiseGain.gain.setTargetAtTime(on ? 0.035 : 0, audioCtx.currentTime, 0.08);
+  radio.noiseGain.gain.setTargetAtTime(on ? 0.035 : 0, radio.ac.currentTime, 0.08);
 }
 
 // Tells everyone a message is (not) playing — drives the badge and ducks the
@@ -5051,10 +5082,10 @@ radioEl('radio-seek').addEventListener('change', () => {
   const a = radio.audio; radio.seeking = false;
   if (a && isFinite(a.duration)) a.currentTime = radioEl('radio-seek').value/1000*a.duration;
 });
-radioEl('radio-vol').addEventListener('input', () => { if (radio.level) radio.level.gain.setTargetAtTime(radioEl('radio-vol').value/100, audioCtx.currentTime, 0.03); });
+radioEl('radio-vol').addEventListener('input', () => { if (radio.level) radio.level.gain.setTargetAtTime(radioEl('radio-vol').value/100, radio.ac.currentTime, 0.03); });
 radioEl('radio-fx').addEventListener('change', () => { radio.fx = radioEl('radio-fx').checked; radioApplyFx(); });
 radioEl('radio-loop').addEventListener('change', () => { if (radio.audio) radio.audio.loop = radioEl('radio-loop').checked; });
-radioEl('radio-mon').addEventListener('change', () => { if (radio.mon) radio.mon.gain.setTargetAtTime(radioEl('radio-mon').checked ? 1 : 0, audioCtx.currentTime, 0.03); });
+radioEl('radio-mon').addEventListener('change', () => { if (radio.mon) radio.mon.gain.setTargetAtTime(radioEl('radio-mon').checked ? 1 : 0, radio.ac.currentTime, 0.03); });
 
 loadAdLibrary(); // pick up whatever is in ads/ right now (async; the built-in list serves until it lands)
 
