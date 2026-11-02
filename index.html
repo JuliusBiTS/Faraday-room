@@ -236,6 +236,7 @@ body.locked #crosshair{opacity:1}
    see this, the DM never sees it — mutually exclusive by role). */
 #banner-ad-panel{position:fixed;top:110px;right:0;transform:translateX(115%);width:300px;height:250px;background:#000;border:3px solid #ff2f9e;box-shadow:0 0 40px rgba(255,47,158,.5),0 6px 30px rgba(0,0,0,.7);z-index:210;pointer-events:none;transition:transform .7s cubic-bezier(.16,.84,.44,1);overflow:hidden}
 #banner-ad-panel.show{transform:translateX(0)}
+#banner-ad-panel.dm{top:auto;bottom:110px}
 #banner-ad-img{width:100%;height:100%;object-fit:contain;background:#0a0a0a;display:block}
 #banner-ad-label{position:absolute;top:6px;left:6px;background:rgba(255,47,158,.9);color:#0a0a0a;font-family:var(--fm);font-size:9px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;padding:3px 8px}
 #banner-ad-skip-hint{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.85);color:#ffcc00;font-family:var(--fm);font-size:11px;letter-spacing:.5px;text-transform:uppercase;padding:5px 9px;border:1px solid rgba(255,204,0,.5);white-space:nowrap}
@@ -561,14 +562,16 @@ const SECRET_ROOM_D  = 2.5;  // hidden side room depth
 
 // ══════════ ADS ══════════
 // Shared by the passive south-wall billboard (image only) and the full
-// ad-interruption system (image + jingle). Drop more image+jingle pairs
-// into ads/ and add an entry here to expand the library later; both
-// systems just pick randomly from whatever's here. Jingle paths below
+// ad-interruption system (image + jingle). The list below is only the
+// built-in fallback: at load, loadAdLibrary() reads the actual ads/ folder
+// (see below) and replaces it, so dropping a new image into ads/ and pushing
+// is all it takes — both systems pick randomly from whatever's in the folder.
+// Jingle paths below
 // follow the same-basename convention (e.g. "Air.png" + "Air.wav") even
 // for ads that don't have one yet — showAdOverlay() already handles a
 // missing jingle file gracefully (silent ad, no error), so a jingle can
 // be dropped in later with zero code changes once it exists.
-const AD_LIBRARY = [
+let AD_LIBRARY = [
   { image: 'ads/moodpatch.png', jingle: 'ads/moodpatch.wav', name: 'MOODPATCH' },
   { image: 'ads/penthouse.png', jingle: 'ads/penthouse.wav', name: 'Arasaka Real Estate' },
   { image: 'ads/Air.png', jingle: 'ads/Air.wav', name: 'Air' },
@@ -605,6 +608,68 @@ const AD_LIBRARY = [
 // of each entry's own (mostly-not-yet-recorded) jingle field. Set this
 // back to null once more per-ad jingles exist, to fall back to entry.jingle.
 const AD_JINGLE_SHARED = 'ads/Look at the Ad.mp3';
+
+// ── Auto-discovery of ads/ ──
+// A static site can't list its own folder, so this asks GitHub's public
+// contents API for it (the repo is public) and keeps every image file in it.
+// Safe by design: results are cached for 10 minutes (the API allows 60
+// requests/hour per IP — add ?refreshads to the URL to bypass the cache), any
+// failure (offline, rate limit, fork) leaves the built-in list above in
+// place, and a file the listing shows but the site hasn't deployed yet
+// (push → Pages lag) is probed first and simply skipped until it loads.
+const AD_IMAGE_RE = /\.(png|jpe?g|webp|gif)$/i;
+const AD_LIST_CACHE_KEY = 'faradayRoomAdList', AD_LIST_TTL_MS = 10*60*1000;
+function adRepoSlug() {
+  const m = location.hostname.match(/^([^.]+)\.github\.io$/i);
+  const repo = location.pathname.split('/').filter(Boolean)[0];
+  return (m && repo && !/\.html?$/i.test(repo)) ? m[1]+'/'+repo : 'JuliusBiTS/Faraday-room';
+}
+async function listAdFiles() {
+  if (!/[?&]refreshads\b/.test(location.search)) {
+    try {
+      const c = JSON.parse(localStorage.getItem(AD_LIST_CACHE_KEY));
+      if (c && Array.isArray(c.names) && Date.now()-c.t < AD_LIST_TTL_MS) return c.names;
+    } catch(e) {}
+  }
+  const r = await fetch('https://api.github.com/repos/'+adRepoSlug()+'/contents/ads');
+  if (!r.ok) throw new Error('ads/-Listing: HTTP '+r.status);
+  const names = (await r.json()).filter(f => f.type==='file' && AD_IMAGE_RE.test(f.name)).map(f => f.name).sort();
+  try { localStorage.setItem(AD_LIST_CACHE_KEY, JSON.stringify({t:Date.now(), names})); } catch(e) {}
+  return names;
+}
+const probeImage = url => new Promise(res => { const i = new Image(); i.onload = () => res(true); i.onerror = () => res(false); i.src = url; });
+async function loadAdLibrary() {
+  try {
+    const names = await listAdFiles();
+    if (!names.length) return;
+    const known = new Map(AD_LIBRARY.map(a => [a.image, a]));
+    const entries = await Promise.all(names.map(async n => {
+      const image = 'ads/'+n;
+      if (known.has(image)) return known.get(image);
+      if (!(await probeImage(image))) return null; // listed but not deployed (yet)
+      const base = n.replace(/\.[^.]+$/, '');
+      return { image, jingle: 'ads/'+base+'.wav', name: base };
+    }));
+    const next = entries.filter(Boolean);
+    if (!next.length) return;
+    AD_LIBRARY = next;
+    lastBillboardBroadcastSlot = null; // GM: re-announce this slot's ads from the new list
+    AD_LIBRARY.forEach(ad => billboardImg(ad.image));
+    console.info('Werbung geladen aus ads/: '+AD_LIBRARY.length+' Motive');
+  } catch(e) { console.warn('ads/ konnte nicht gelesen werden — nutze die eingebaute Liste:', e); }
+}
+
+// Every client builds its own list, so the GM's broadcasts carry the image
+// PATH rather than a list position (positions only match while every client
+// has an identical list). A received path is only accepted if it looks like
+// an image directly inside ads/ — never an arbitrary URL.
+const AD_PATH_RE = /^ads\/[^\/\\]+\.(png|jpe?g|webp|gif)$/i;
+function resolveAd(ref) {
+  if (typeof ref === 'number') return AD_LIBRARY[ref] || null;
+  if (typeof ref === 'string' && AD_PATH_RE.test(ref) && !ref.includes('..'))
+    return AD_LIBRARY.find(a => a.image === ref) || { image: ref, jingle: null, name: ref };
+  return null;
+}
 const BILLBOARD_HOLD_S = 5*60; // seconds each billboard ad stays up — slow on purpose, this is background scenery for an 8-hour session, not something that should keep grabbing attention
 const BILLBOARD_FADE_S = 3;    // crossfade duration between ads — never a hard cut, matching the room's own no-strobe rule
 const AD_NO_SKIP_S     = 5;   // seconds before a skip option appears at all — the joke is that it's genuinely unskippable at first
@@ -2624,9 +2689,62 @@ function buildSecurityCam(w) {
 // not gated by) the DM's ad-system kill switch below, which only
 // controls the interruptive overlay.
 let billboardCanvas, billboardCtx, billboardTexture;
-let billboardImages = [];
-let billboardIndex = 0;
-let billboardElapsed = 0;
+
+// Everyone — GM included — sees the SAME billboard ad at any moment, so
+// the group can talk about it. Two layers make that hold:
+//  1. The schedule is a pure function of a shared clock: time is cut into
+//     slots of HOLD+FADE seconds, and each slot's ad comes from a seeded
+//     shuffle of the (path-sorted) ad list — same inputs, same ad, on every
+//     client, with no messages needed. Shuffled in rounds so every ad runs
+//     once before any repeats (and never the same ad twice in a row).
+//  2. The GM also broadcasts the current slot's ads (see billboardOverride),
+//     which wins over the local calculation — so a client whose ad list is
+//     momentarily different (cache/deploy lag) still shows what the GM shows.
+// "Shared clock" = the GM's clock: players measure their offset from the
+// timestamp in the GM's broadcasts, so a wrong PC clock can't desync them.
+const BILLBOARD_SLOT_S = BILLBOARD_HOLD_S + BILLBOARD_FADE_S;
+let sharedClockOffsetMs = 0;           // GM clock minus mine (always 0 on the GM)
+const sharedNow = () => Date.now() + sharedClockOffsetMs;
+let billboardOverride = null;          // {slot, cur, next} last received from the GM
+let lastBillboardBroadcastSlot = null; // GM only
+const billboardImgs = new Map();       // path -> Image (decoded once, reused every frame)
+function billboardImg(path) {
+  let img = billboardImgs.get(path);
+  if (!img) { img = new Image(); img.src = path; billboardImgs.set(path, img); }
+  return img;
+}
+function mulberry32(a) {
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+let billboardOrderCache = {lib:null, round:null, order:[]};
+function billboardRound(paths, round) { // seeded Fisher-Yates of one round
+  const o = paths.slice(), rnd = mulberry32(round*2654435761 >>> 0);
+  for (let i=o.length-1;i>0;i--) { const j = Math.floor(rnd()*(i+1)); [o[i],o[j]] = [o[j],o[i]]; }
+  return o;
+}
+function billboardPick(slot) {
+  const paths = AD_LIBRARY.map(a => a.image).sort();
+  const N = paths.length;
+  if (!N) return null;
+  if (N === 1) return paths[0];
+  const round = Math.floor(slot/N), pos = slot - round*N;
+  if (billboardOrderCache.lib !== AD_LIBRARY || billboardOrderCache.round !== round) {
+    const order = billboardRound(paths, round);
+    // never the same ad twice across a round boundary (the previous round's
+    // last entry is unaffected by this swap, so one level of lookback is exact)
+    if (N > 2 && order[0] === billboardRound(paths, round-1)[N-1]) [order[0],order[1]] = [order[1],order[0]];
+    billboardOrderCache = {lib:AD_LIBRARY, round, order};
+  }
+  return billboardOrderCache.order[pos];
+}
+function broadcastBillboard(slot) { // GM only
+  if (!isDM || !agoraClient) return;
+  const cur = billboardPick(slot), next = billboardPick(slot+1);
+  if (!cur) return;
+  agoraClient.sendStreamMessage(new TextEncoder().encode(JSON.stringify({type:'billboard', slot, cur, next, now:Date.now()})), true)
+    .catch(e => console.warn('Billboard-Broadcast fehlgeschlagen:', e));
+}
 function buildBillboard(w) {
   // Sized to fill almost the entire door between the two warning stripes
   // (at WALL_H*0.46 ± WALL_H*0.32) and nearly the door's full width,
@@ -2648,11 +2766,7 @@ function buildBillboard(w) {
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(BW,BH), new THREE.MeshBasicMaterial({map:billboardTexture}));
   screen.position.set(w.mid[0]+offset.x,by,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
 
-  billboardImages = AD_LIBRARY.map(ad => { const img=new Image(); img.src=ad.image; return img; });
-  // Random start instead of always index 0 — otherwise every fresh scene
-  // load shows the same first ad (moodpatch) for a full BILLBOARD_HOLD_S
-  // before it ever gets a chance to cycle.
-  billboardIndex = Math.floor(Math.random() * billboardImages.length);
+  AD_LIBRARY.forEach(ad => billboardImg(ad.image)); // start decoding everything up front
 }
 
 // Draws `img` centered and letterboxed (never distorted) into a W x H
@@ -2670,26 +2784,20 @@ function drawAdContain(ctx, img, W, H, alpha) {
 }
 
 function updateBillboard(dt) {
-  if (!billboardCtx || !billboardImages.length) return;
-  billboardElapsed += dt;
+  if (!billboardCtx || !AD_LIBRARY.length) return;
+  const now = sharedNow()/1000;
+  const slot = Math.floor(now/BILLBOARD_SLOT_S), t = now - slot*BILLBOARD_SLOT_S;
+  if (isDM && slot !== lastBillboardBroadcastSlot && agoraClient) { lastBillboardBroadcastSlot = slot; broadcastBillboard(slot); }
+  const useOverride = billboardOverride && billboardOverride.slot === slot;
+  const cur = useOverride ? billboardOverride.cur : billboardPick(slot);
+  const next = useOverride ? billboardOverride.next : billboardPick(slot+1);
   const W = billboardCanvas.width, H = billboardCanvas.height;
   const ctx = billboardCtx;
   ctx.fillStyle = '#050505'; ctx.fillRect(0,0,W,H);
-  drawAdContain(ctx, billboardImages[billboardIndex], W, H, 1);
-  if (billboardElapsed > BILLBOARD_HOLD_S) {
-    // Random next pick (never repeating the current ad back-to-back)
-    // rather than a fixed sequential order — otherwise every session sees
-    // the exact same ad rotation in the exact same order.
-    let nextIdx = billboardIndex;
-    if (billboardImages.length > 1) {
-      while (nextIdx === billboardIndex) nextIdx = Math.floor(Math.random() * billboardImages.length);
-    }
-    const fadeT = Math.min(1, (billboardElapsed-BILLBOARD_HOLD_S)/BILLBOARD_FADE_S);
-    drawAdContain(ctx, billboardImages[nextIdx], W, H, fadeT);
-    if (billboardElapsed > BILLBOARD_HOLD_S+BILLBOARD_FADE_S) {
-      billboardIndex = nextIdx;
-      billboardElapsed = 0;
-    }
+  if (cur) drawAdContain(ctx, billboardImg(cur), W, H, 1);
+  if (t > BILLBOARD_HOLD_S && next) {
+    const fadeT = Math.min(1, (t-BILLBOARD_HOLD_S)/BILLBOARD_FADE_S);
+    drawAdContain(ctx, billboardImg(next), W, H, fadeT);
   }
   billboardTexture.needsUpdate = true;
 }
@@ -3899,6 +4007,7 @@ function dmResyncRoom() {
     broadcastToken({type:'tokenAdd', id, url:t.url, u:t.u, v:t.v, category:t.category, size:t.size}, true);
   });
   if (forceMuteHeartbeat) sendForceMute(); // a latecomer/reconnecter must not miss a running mute-all
+  broadcastBillboard(Math.floor(sharedNow()/1000/BILLBOARD_SLOT_S)); // ...nor start on a different billboard ad than everyone else
 }
 
 // ══════════ NETWORK RESILIENCE ══════════
@@ -4182,16 +4291,22 @@ async function initAgora(appId, room, myName, asDM, token) {
           }
         }
       }
+      if(msg.type==='billboard' && !isDM && (users[uid]?.isDM || pendingName[uid]?.isDM)
+         && Number.isFinite(msg.slot) && Number.isFinite(msg.now) && AD_PATH_RE.test(msg.cur||'') && !String(msg.cur).includes('..')
+         && (!msg.next || (AD_PATH_RE.test(msg.next) && !String(msg.next).includes('..')))){
+        billboardOverride = {slot:msg.slot, cur:msg.cur, next:msg.next||msg.cur};
+        sharedClockOffsetMs = msg.now - Date.now(); // adopt the GM's clock for the billboard schedule
+      }
       if(msg.type==='adTrigger'){
         if(msg.ts!==lastAdTriggerTs){
           lastAdTriggerTs=msg.ts;
-          showAdOverlay(msg.adIndex);
+          showAdOverlay(msg.image ?? msg.adIndex);
         }
       }
       if(msg.type==='bannerAdTrigger'){
         if(msg.ts!==lastBannerAdTriggerTs){
           lastBannerAdTriggerTs=msg.ts;
-          showBannerAd(msg.adIndex);
+          showBannerAd(msg.image ?? msg.adIndex);
         }
       }
       if(msg.type==='adForceClose'){
@@ -4375,10 +4490,15 @@ function startAdHourlyTimer() {
 async function triggerAdBroadcast() {
   if (!agoraClient || !AD_LIBRARY.length) return;
   const adIndex = Math.floor(Math.random() * AD_LIBRARY.length);
+  const image = AD_LIBRARY[adIndex].image, ts = Date.now();
   try {
     await agoraClient.sendStreamMessage(
-      new TextEncoder().encode(JSON.stringify({ type:'adTrigger', ts:Date.now(), adIndex })), true);
+      new TextEncoder().encode(JSON.stringify({ type:'adTrigger', ts, adIndex, image })), true);
   } catch(e) { console.warn('Werbe-Trigger-Broadcast fehlgeschlagen:', e); }
+  // Agora never delivers a client's own message back to it, so the GM's own
+  // screen shows the ad here, at the same moment and with the same image.
+  lastAdTriggerTs = ts;
+  showAdOverlay(image);
 }
 
 function updateAdsToggleUI() {
@@ -4398,9 +4518,12 @@ function updateAdsToggleUI() {
 // options the brief offered for GM handling — flagged here since it's a
 // UX preference, not a constraint, and easy to flip to an instant-free
 // overlay instead if that's ever preferred).
-function showAdOverlay(adIndex) {
-  if (isDM) return;
-  const entry = AD_LIBRARY[adIndex];
+function showAdOverlay(adRef) { // adRef: an ads/ image path (broadcast) or a list index (local test hook)
+  // The GM sees the same ad at the same moment as everyone (so they can talk
+  // about it), but has no wallet: linkedCharId is null for the GM, so the
+  // skip is simply free — same rule as a player with no linked character.
+  const adIndex = adRef;
+  const entry = resolveAd(adRef);
   if (!entry) return;
   closeAdOverlay(); // clear any stray previous state first
 
@@ -4514,20 +4637,26 @@ function scheduleBannerAd() {
 async function triggerBannerAdBroadcast() {
   if (!agoraClient || !AD_LIBRARY.length) return;
   const adIndex = Math.floor(Math.random() * AD_LIBRARY.length);
+  const image = AD_LIBRARY[adIndex].image, ts = Date.now();
   try {
     await agoraClient.sendStreamMessage(
-      new TextEncoder().encode(JSON.stringify({ type:'bannerAdTrigger', ts:Date.now(), adIndex })), true);
+      new TextEncoder().encode(JSON.stringify({ type:'bannerAdTrigger', ts, adIndex, image })), true);
   } catch(e) { console.warn('Banner-Werbe-Trigger-Broadcast fehlgeschlagen:', e); }
+  lastBannerAdTriggerTs = ts; // own message is never delivered back — show it on the GM's screen directly
+  showBannerAd(image);
 }
 
 // Player-only, no audio at all (unlike showAdOverlay, which loops a
 // jingle) — this is meant to read as a quick, cheap web-banner intrusion,
 // not a forced-attention moment.
-function showBannerAd(adIndex) {
-  if (isDM) return;
-  const entry = AD_LIBRARY[adIndex];
+function showBannerAd(adRef) { // adRef: an ads/ image path (broadcast) or a list index
+  // GM included, same as showAdOverlay — everyone sees the same banner. For
+  // the GM it sits bottom-right instead, clear of the GM panel up top.
+  const adIndex = adRef;
+  const entry = resolveAd(adRef);
   if (!entry) return;
   closeBannerAd(); // clear any stray previous state first
+  document.getElementById('banner-ad-panel').classList.toggle('dm', isDM);
 
   document.getElementById('banner-ad-img').src = entry.image;
   document.getElementById('banner-ad-skip-hint').style.display = 'none';
@@ -4576,6 +4705,8 @@ function closeBannerAd() {
   clearTimeout(bannerAdHideTimer);
   currentBannerAd = null;
 }
+
+loadAdLibrary(); // pick up whatever is in ads/ right now (async; the built-in list serves until it lands)
 
 // ══════════ JOIN & INVITE LINK ══════════
 // Everything that tends to go wrong around "getting in": typos in the
@@ -5099,7 +5230,9 @@ document.getElementById('ad-toggle-btn').addEventListener('click', async () => {
   updateAdsToggleUI();
   if (!adsEnabled) {
     // "Stop any ads from showing" — also force-closes whatever's
-    // currently up for everyone, free, not just future triggers.
+    // currently up for everyone, free, not just future triggers. The GM's
+    // own screen too (own broadcasts are never delivered back).
+    closeAdOverlay(); closeBannerAd();
     try {
       await agoraClient?.sendStreamMessage(
         new TextEncoder().encode(JSON.stringify({type:'adForceClose', ts:Date.now()})), true);
