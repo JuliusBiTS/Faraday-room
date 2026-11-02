@@ -297,7 +297,7 @@ canvas{display:block}
       <div class="fh">Verknüpft deinen Eurodollar-Kontostand mit den Kosten fürs Werbung-Überspringen. Ohne Verknüpfung sind Skips kostenlos.</div>
     </div>
     <label class="dm-row">
-      <input type="checkbox" id="f-isdm"/>
+      <input type="checkbox" id="f-isdm" autocomplete="off"/>
       <span class="tpill"></span>
       <span class="dlabel">GM-Zugang</span>
     </label>
@@ -4665,6 +4665,14 @@ async function joinWithRetry(appId, room, token, uid) {
   throw last;
 }
 
+// The GM toggle must never carry over from a previous visit: browsers restore
+// form state on reload/back/duplicate-tab (autocomplete="off" on the input
+// stops most of it, this covers the rest, incl. the back-forward cache). A
+// forgotten ON toggle silently gives a player the GM view of the map wall.
+const clearGmToggle = () => { const el = document.getElementById('f-isdm'); if (el) el.checked = false; };
+clearGmToggle();
+window.addEventListener('pageshow', clearGmToggle);
+
 // Remember the last-used name so it isn't retyped every session.
 const NAME_KEY = 'faradayRoomLastName';
 try {
@@ -4981,7 +4989,11 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     await initAgora(appId,room,name,isDM,token);
     document.getElementById('hud').style.display='flex';
     document.getElementById('ctrl').style.display='flex';
-    document.getElementById('hud-room').textContent='RAUM: '+room.toUpperCase();
+    // The role decides what the map wall shows (the GM sees hidden tokens,
+    // devices and the whole map; players see only what's revealed), so make
+    // it visible at all times — a GM view mistaken for a player view looks
+    // exactly like "hidden things are leaking to players".
+    document.getElementById('hud-room').textContent='RAUM: '+room.toUpperCase()+' · '+(isDM?'GM-ANSICHT':'SPIELER');
     // Joined without a camera and/or mic? Say so, and the buttons retry.
     setCamUI(); setMicUI();
     if(!localAudio) showMediaNotice((mediaProblem||'Kein Mikrofon aktiv')+' — du hörst alle, wirst aber nicht gehört. Der Mic-Button versucht es erneut.', 15000);
