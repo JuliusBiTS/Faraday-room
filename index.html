@@ -20,20 +20,25 @@ body{background:var(--dark);color:var(--c);font-family:var(--fm);overflow:hidden
 body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.06) 2px,rgba(0,0,0,0.06) 4px);pointer-events:none;z-index:9000}
 
 /* JOIN */
-#join-overlay{position:fixed;inset:0;background:radial-gradient(ellipse at center,#0b1114,#050607);display:flex;align-items:center;justify-content:center;z-index:8000}
-.jbox{width:440px;border:1px solid rgba(47,216,232,0.35);background:var(--card);padding:44px 40px;position:relative;box-shadow:0 0 60px rgba(47,216,232,0.06)}
+/* The overlay scrolls (a fixed, overflow-hidden form cuts the connect button
+   off on any screen shorter than the form, with no way to reach it). The box
+   centres itself with margin:auto — centred when it fits, top-aligned and
+   scrollable when it doesn't (plain flex centring would clip the top part
+   out of reach). */
+#join-overlay{position:fixed;inset:0;background:radial-gradient(ellipse at center,#0b1114,#050607);display:flex;z-index:8000;overflow-y:auto;overflow-x:hidden;padding:16px;scrollbar-width:thin;scrollbar-color:rgba(47,216,232,.3) transparent}
+.jbox{--jpx:clamp(18px,5vw,40px);--jpy:clamp(16px,4vh,44px);width:min(440px,100%);margin:auto;border:1px solid rgba(47,216,232,0.35);background:var(--card);padding:var(--jpy) var(--jpx);position:relative;box-shadow:0 0 60px rgba(47,216,232,0.06)}
 .jbox::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--c),transparent)}
-.jlogo{text-align:center;margin-bottom:36px}
+.jlogo{text-align:center;margin-bottom:clamp(12px,3.5vh,36px)}
 .jlogo-t{font-family:var(--fd);font-size:22px;font-weight:900;letter-spacing:5px;color:var(--c);text-shadow:0 0 24px rgba(47,216,232,0.6)}
 .jlogo-t2{font-family:var(--fd);font-size:12px;font-weight:700;letter-spacing:8px;color:var(--amb);margin-top:6px;text-transform:uppercase}
 .jlogo-s{font-size:11px;letter-spacing:3px;color:rgba(47,216,232,0.35);margin-top:10px;text-transform:uppercase}
-.fg{margin-bottom:16px}
+.fg{margin-bottom:clamp(10px,1.8vh,16px)}
 .fl{display:block;font-size:9px;letter-spacing:3px;color:rgba(47,216,232,0.5);margin-bottom:6px;text-transform:uppercase}
 .fi{width:100%;background:rgba(0,0,0,0.4);border:1px solid rgba(47,216,232,0.22);color:var(--c);font-family:var(--fm);font-size:15px;padding:10px 14px;outline:none;transition:border-color .2s,box-shadow .2s}
 .fi:focus{border-color:rgba(47,216,232,.7);box-shadow:0 0 10px rgba(47,216,232,.15)}
 .fi::placeholder{color:rgba(47,216,232,.22)}
 .fh{font-size:9px;letter-spacing:1px;color:rgba(47,216,232,.28);margin-top:4px}
-.dm-row{display:flex;align-items:center;gap:14px;margin:22px 0;cursor:pointer}
+.dm-row{display:flex;align-items:center;gap:14px;margin:clamp(10px,2vh,22px) 0;cursor:pointer}
 .dm-row input{display:none}
 .tpill{width:44px;height:22px;background:rgba(0,0,0,.5);border:1px solid rgba(217,138,61,.35);border-radius:2px;position:relative;transition:all .25s;flex-shrink:0}
 .tpill::after{content:'';position:absolute;width:15px;height:15px;background:rgba(217,138,61,.4);top:3px;left:3px;transition:all .25s}
@@ -44,6 +49,33 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 .jbtn{width:100%;background:transparent;border:1px solid var(--c);color:var(--c);font-family:var(--fd);font-size:12px;font-weight:700;letter-spacing:5px;padding:15px;cursor:pointer;text-transform:uppercase;transition:all .2s}
 .jbtn:hover{background:rgba(47,216,232,.08);box-shadow:0 0 20px rgba(47,216,232,.18)}
 .jbtn:disabled{opacity:.5;cursor:not-allowed}
+.pv-btn{width:100%;background:transparent;border:1px solid rgba(47,216,232,0.3);color:rgba(47,216,232,0.85);font-family:var(--fd);font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:10px;cursor:pointer;transition:all .2s;margin-bottom:12px}
+.pv-btn:hover{background:rgba(47,216,232,0.1);border-color:var(--c)}
+
+/* "Erweitert": everything a returning/invited player never needs to touch
+   (App-ID, token, database URL, invite link). Closed by default; opened
+   automatically when something is missing or an error happens (see
+   openAdv()). */
+.adv{margin:0 0 12px;border:1px solid rgba(47,216,232,.15)}
+.adv summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(47,216,232,.7);display:flex;justify-content:space-between;align-items:center;gap:10px}
+.adv summary::-webkit-details-marker{display:none}
+.adv summary::after{content:'▸';margin-left:auto;color:rgba(47,216,232,.5)}
+.adv[open] summary::after{content:'▾'}
+.adv summary:hover{background:rgba(47,216,232,.05)}
+#adv-state{font-size:9px;letter-spacing:1px;color:rgba(47,216,232,.4)}
+#adv-state.ok{color:var(--g)}
+#adv-state.warn{color:var(--r)}
+.adv-body{padding:14px 12px 2px;border-top:1px solid rgba(47,216,232,.12)}
+/* Error line + connect button stay pinned to the bottom edge of the window
+   while the form scrolls, so "Verbinden" is reachable on any screen size. */
+.jfoot{position:sticky;bottom:0;background:#0b0f11;margin:0 calc(-1*var(--jpx)) calc(-1*var(--jpy));padding:10px var(--jpx) var(--jpy);border-top:1px solid rgba(47,216,232,.1)}
+.jfoot #jerr{margin-bottom:8px}
+/* Short screens (small laptops): drop the explanatory small print and tighten up. */
+@media (max-height:820px){ .fh,.jlogo-s{display:none} }
+@media (max-height:700px){
+  .jlogo-t{font-size:18px} .jlogo-t2{font-size:10px;letter-spacing:6px}
+  .fi{padding:8px 12px} .jbtn{padding:12px} .pv-btn{padding:8px;margin-bottom:8px}
+}
 
 /* CROSSHAIR */
 #crosshair{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:500;opacity:0;transition:opacity .3s}
@@ -224,29 +256,14 @@ canvas{display:block}
       <div class="jlogo-s">Night City · Verschlüsselte Verbindung</div>
     </div>
     <div class="fg">
-      <label class="fl" for="f-appid">Agora App-ID</label>
-      <input class="fi" id="f-appid" type="text" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" spellcheck="false"/>
-      <div class="fh">Kostenlos: agora.io → Neues Projekt → Testing-Mode → App ID kopieren</div>
-    </div>
-    <div class="fg">
-      <label class="fl" for="f-room">Raum-Code</label>
-      <input class="fi" id="f-room" type="text" placeholder="faraday-sitzung-01" autocomplete="off"/>
-      <div class="fh">Alle Runner müssen denselben Code eingeben</div>
-    </div>
-    <div class="fg">
-      <label class="fl" for="f-token">Token (nur falls Projekt ein Zertifikat hat)</label>
-      <input class="fi" id="f-token" type="text" placeholder="optional" autocomplete="off" spellcheck="false"/>
-      <div class="fh">Agora-Konsole → Projekt → "Generate Temp Token" (mit UID 0, für diesen Raum-Code). Leer lassen, wenn das Projekt kein Zertifikat hat.</div>
-    </div>
-    <div class="fg">
       <label class="fl" for="f-name">Dein Name</label>
       <input class="fi" id="f-name" type="text" placeholder="z. B. dein Runner-Name" autocomplete="off" maxlength="24"/>
       <div class="fh">Wird für alle sichtbar (Namensschild, Lautstärke-Liste, Kamera-Galerie, Flüstern-Auswahl)</div>
     </div>
     <div class="fg">
-      <label class="fl" for="f-dburl">CP_Phantom Datenbank-URL (optional)</label>
-      <input class="fi" id="f-dburl" type="text" placeholder="https://dein-projekt-default-rtdb.firebaseio.com" autocomplete="off" spellcheck="false"/>
-      <div class="fh">Spiegelt Karte, Token und Nebel des Kriegs vom GM-Tool live auf die Nordwand. Leer lassen, wenn keine Kampagne läuft — die Wand bleibt dann einfach im Standby.</div>
+      <label class="fl" for="f-room">Raum-Code</label>
+      <input class="fi" id="f-room" type="text" placeholder="faraday-sitzung-01" autocomplete="off"/>
+      <div class="fh">Alle Runner müssen denselben Code eingeben</div>
     </div>
     <div class="fg" id="f-char-wrap" style="display:none">
       <label class="fl" for="f-charid">Charakter verknüpfen (optional)</label>
@@ -260,8 +277,31 @@ canvas{display:block}
       <span class="tpill"></span>
       <span class="dlabel">GM-Zugang</span>
     </label>
-    <div id="jerr">&nbsp;</div>
-    <button class="jbtn" id="join-btn">▶ VERBINDEN</button>
+    <details class="adv" id="adv">
+      <summary><span>⚙ Erweitert</span><span id="adv-state"></span></summary>
+      <div class="adv-body">
+        <div class="fg">
+          <label class="fl" for="f-appid">Agora App-ID</label>
+          <input class="fi" id="f-appid" type="text" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" spellcheck="false"/>
+          <div class="fh">Kostenlos: agora.io → Neues Projekt → Testing-Mode → App ID kopieren</div>
+        </div>
+        <div class="fg">
+          <label class="fl" for="f-token">Token (nur falls Projekt ein Zertifikat hat)</label>
+          <input class="fi" id="f-token" type="text" placeholder="optional" autocomplete="off" spellcheck="false"/>
+          <div class="fh">Agora-Konsole → Projekt → "Generate Temp Token" (mit UID 0, für diesen Raum-Code). Leer lassen, wenn das Projekt kein Zertifikat hat.</div>
+        </div>
+        <div class="fg">
+          <label class="fl" for="f-dburl">CP_Phantom Datenbank-URL (optional)</label>
+          <input class="fi" id="f-dburl" type="text" placeholder="https://dein-projekt-default-rtdb.firebaseio.com" autocomplete="off" spellcheck="false"/>
+          <div class="fh">Spiegelt Karte, Token und Nebel des Kriegs vom GM-Tool live auf die Nordwand. Leer lassen, wenn keine Kampagne läuft — die Wand bleibt dann einfach im Standby.</div>
+        </div>
+        <button class="pv-btn" id="invite-btn" type="button" title="Erzeugt einen Link, der App-ID, Raum-Code, Token und Datenbank-URL schon eingetragen hat — zum Verschicken an die Gruppe">🔗 Einladungslink kopieren</button>
+      </div>
+    </details>
+    <div class="jfoot">
+      <div id="jerr">&nbsp;</div>
+      <button class="jbtn" id="join-btn">▶ VERBINDEN</button>
+    </div>
   </div>
 </div>
 
@@ -756,7 +796,13 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 // ══════════ SCENE INIT ══════════
+let sceneInitialized = false;
 function initScene() {
+  // A failed join followed by "try again" calls this a second time — without
+  // this guard that built a whole second scene and started a second render
+  // loop on top of the first (everything running at double speed).
+  if (sceneInitialized) return;
+  sceneInitialized = true;
   clock = new THREE.Clock();
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -3574,7 +3620,7 @@ async function initAgora(appId, room, myName, asDM, token) {
   });
 
   localUID=Math.floor(Math.random()*900000)+10000;
-  await agoraClient.join(appId,room,joinedToken,localUID);
+  await joinWithRetry(appId,room,joinedToken,localUID);
 
   // getUserMedia can hang indefinitely on some devices/permission states
   // instead of rejecting. Without a timeout, the join button is stuck on
@@ -3952,22 +3998,156 @@ function closeBannerAd() {
   currentBannerAd = null;
 }
 
-// ══════════ UI EVENTS ══════════
-// Prefill the optional CP_Phantom URL from last time, same convenience
-// convention as CP_Phantom's own 'cp_db_url' localStorage key — the field
-// still starts blank for anyone who's never entered one.
-try {
-  const savedDbUrl = localStorage.getItem('faradayRoomDbUrl');
-  if (savedDbUrl) document.getElementById('f-dburl').value = savedDbUrl;
-} catch(e) {}
+// ══════════ JOIN & INVITE LINK ══════════
+// Everything that tends to go wrong around "getting in": typos in the
+// pasted App-ID/token, cryptic English SDK errors, a slow/blocked connection
+// — plus an invite link that pre-fills every technical field, so a player
+// only has to type their name. Ported from the Fantasy-room project.
 
-// Remember the last-used name so it isn't retyped every session, same
-// convenience convention as the DB URL above.
+// Remembered between sessions so a returning player only presses connect.
+// Deliberately never the token — it expires, and a stale one is exactly the
+// kind of thing that makes joining fail.
+const JOIN_PREFS_KEY = 'faradayRoomJoinPrefs';
+function loadJoinPrefs(){ try{ return JSON.parse(localStorage.getItem(JOIN_PREFS_KEY)) || {}; }catch(e){ return {}; } }
+function saveJoinPrefs(p){ try{ localStorage.setItem(JOIN_PREFS_KEY, JSON.stringify({...loadJoinPrefs(), ...p})); }catch(e){} }
+
+// App IDs are 32 hex characters; pasted values often carry stray spaces or
+// line breaks (and tokens, which are long, even more often).
+const cleanId = s => (s||'').replace(/\s+/g,'');
+const APP_ID_RE = /^[0-9a-f]{32}$/i;
+// Agora temp tokens look like '007eJxT…' (long, base64-ish) — easy to paste
+// into the App-ID field by mistake. If the two fields are swapped/misplaced,
+// fix it and say so, instead of just rejecting a perfectly valid credential.
+const TOKEN_RE = /^00\d[A-Za-z0-9+\/=_-]{40,}$/;
+// An invite link may carry the CP_Phantom database URL; only accept what
+// actually looks like a Firebase Realtime Database address, so a doctored
+// link can't point the north-wall screen at an arbitrary server.
+const DB_URL_RE = /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.(firebaseio\.com|firebasedatabase\.app)\/?$/i;
+
+function openAdv() { const d = document.getElementById('adv'); if (d) d.open = true; }
+function updateAdvState() {
+  const el = document.getElementById('adv-state'); if (!el) return;
+  const okId = APP_ID_RE.test(cleanId(document.getElementById('f-appid').value));
+  const tok = !!cleanId(document.getElementById('f-token').value);
+  const db = !!document.getElementById('f-dburl').value.trim();
+  el.className = okId ? 'ok' : 'warn';
+  el.textContent = okId ? '✓ App-ID gesetzt' + (tok ? ' · Token' : '') + (db ? ' · Datenbank' : '') : '⚠ App-ID fehlt';
+}
+function fixSwappedCredentials() {
+  const aEl = document.getElementById('f-appid'), tEl = document.getElementById('f-token');
+  const a = cleanId(aEl.value), t = cleanId(tEl.value);
+  if (TOKEN_RE.test(a) && !APP_ID_RE.test(a)) {
+    if (!t) tEl.value = a;
+    aEl.value = ''; openAdv(); updateAdvState(); aEl.focus();
+    return 'Das war ein Token, keine App-ID — ich habe es ins Token-Feld verschoben. Bitte jetzt noch die App-ID eintragen (32 Zeichen, Agora-Konsole → Projekt → App ID).';
+  }
+  if (APP_ID_RE.test(t) && !a) {
+    aEl.value = t; tEl.value = ''; openAdv(); updateAdvState();
+    return 'Das war die App-ID, kein Token — ich habe es ins App-ID-Feld verschoben. Prüfe die Felder und klicke erneut.';
+  }
+  return '';
+}
+
+// Agora's own errors are terse English codes — turn the usual suspects into
+// something a player can act on. The raw text is appended small so it can
+// still be reported.
+function describeAgoraError(e) {
+  const raw = String((e && (e.code || e.name)) || '') + ' ' + String((e && e.message) || e || '');
+  const has = re => re.test(raw);
+  if (has(/INVALID_VENDOR_KEY|vendor key/i)) return 'Die App-ID ist ungültig (oder das Agora-Projekt existiert nicht mehr). Bitte neu aus der Agora-Konsole kopieren.';
+  if (has(/dynamic use static key|DYNAMIC_KEY|invalid token|token.{0,12}expired|TOKEN_EXPIRED|static key|authorized failed/i)) return 'Das Agora-Projekt verlangt einen Token: Er fehlt, ist abgelaufen oder gehört zu einem anderen Raum-Code. Bitte einen frischen Token (oder den neuen Einladungslink) verwenden.';
+  if (has(/UID_CONFLICT/i)) return 'Diese Verbindung gibt es schon (vielleicht in einem anderen Tab). Bitte die Seite neu laden.';
+  if (has(/AgoraRTC is not defined/i)) return 'Die Agora-Bibliothek konnte nicht geladen werden (Internet/Werbeblocker/Firewall?). Seite neu laden.';
+  if (has(/NotAllowedError|PERMISSION_DENIED|Permission denied|Permission dismissed/i)) return 'Zugriff auf Kamera/Mikrofon wurde verweigert. Im Browser (Schloss-Symbol neben der Adresse) erlauben und neu laden.';
+  if (has(/NotFoundError|DEVICE_NOT_FOUND|Requested device not found|no .*microphone/i)) return 'Es wurde kein passendes Mikrofon/keine Kamera gefunden. Gerät anschließen und erneut versuchen.';
+  if (has(/NotReadableError|TrackStartError|Could not start|in use|not readable/i)) return 'Mikrofon/Kamera wird gerade von einem anderen Programm benutzt (Teams, Zoom, Discord, anderer Tab?). Dort schließen und erneut versuchen.';
+  if (has(/OverconstrainedError|constraint/i)) return 'Das Gerät unterstützt die angeforderten Einstellungen nicht.';
+  if (has(/timeout|keine Antwort|NETWORK|WS_ABORT|OPERATION_ABORTED|CAN_NOT_GET_GATEWAY_SERVER|gateway|Failed to fetch/i)) return 'Die Agora-Server sind nicht erreichbar. Internet, VPN, Firewall oder Firmen-/Schulnetz prüfen (oder ein anderes Netz/Handy-Hotspot probieren).';
+  return 'Unbekannter Fehler.';
+}
+// Problems retrying can't fix (wrong key/token…) — don't waste 20s each time.
+const isPermanentJoinError = e => /INVALID_VENDOR_KEY|vendor key|dynamic use static key|invalid token|token.{0,12}expired|UID_CONFLICT|authorized failed/i
+  .test(String((e && (e.code || e.name)) || '') + ' ' + String((e && e.message) || e || ''));
+
+const sleepMs = ms => new Promise(r => setTimeout(r, ms));
+// Transient network hiccups get three tries (20s each); config errors fail fast.
+async function joinWithRetry(appId, room, token, uid) {
+  let last;
+  for (let i = 1; i <= 3; i++) {
+    try { await withTimeout(agoraClient.join(appId, room, token, uid), 20000, 'Beitritt zum Raum'); return; }
+    catch(e) {
+      last = e;
+      console.warn('Beitritt Versuch '+i+' fehlgeschlagen:', e);
+      if (isPermanentJoinError(e) || i === 3) break;
+      try { await agoraClient.leave(); } catch(_) {}
+      await sleepMs(1500*i);
+    }
+  }
+  throw last;
+}
+
+// Remember the last-used name so it isn't retyped every session.
 const NAME_KEY = 'faradayRoomLastName';
 try {
   const savedName = localStorage.getItem(NAME_KEY);
   if (savedName) document.getElementById('f-name').value = savedName;
 } catch(e) {}
+
+// ── invite link: everything pre-filled, players only add their name ──
+// Uses the URL fragment (#…), which browsers never send to any server.
+// a = App-ID, r = room code, t = token, d = CP_Phantom database URL.
+function readInviteFromUrl() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const d = (p.get('d')||'').trim();
+  return {appId: cleanId(p.get('a')), room: (p.get('r')||'').trim(), token: cleanId(p.get('t')), dbUrl: DB_URL_RE.test(d) ? d : ''};
+}
+(function prefillJoinForm(){
+  const prefs = loadJoinPrefs(), inv = readInviteFromUrl();
+  let legacyDb = ''; try { legacyDb = localStorage.getItem('faradayRoomDbUrl') || ''; } catch(e) {}
+  const set = (id, v) => { if (v) document.getElementById(id).value = v; };
+  set('f-appid', inv.appId || prefs.appId);
+  set('f-room',  inv.room  || prefs.room);
+  set('f-token', inv.token);
+  set('f-dburl', inv.dbUrl || prefs.dbUrl || legacyDb);
+  updateAdvState();
+  // closed by default; open right away if there's no usable App-ID yet
+  if (!APP_ID_RE.test(cleanId(document.getElementById('f-appid').value))) openAdv();
+  ['f-appid','f-token','f-dburl'].forEach(id => document.getElementById(id).addEventListener('input', updateAdvState));
+  if (inv.appId || inv.room) document.getElementById('jerr').textContent = 'Einladung geladen ✓ — du musst nur noch deinen Namen eintragen.';
+  // A pre-filled database URL (invite link or remembered) never fires the
+  // field's own input/blur events, so load the character picker explicitly.
+  if (document.getElementById('f-dburl').value.trim()) refreshCharacterPicker();
+})();
+document.getElementById('invite-btn').addEventListener('click', async () => {
+  const err = document.getElementById('jerr');
+  const swapMsg = fixSwappedCredentials();
+  if (swapMsg) { err.textContent = swapMsg; return; }
+  const appId = cleanId(document.getElementById('f-appid').value), room = document.getElementById('f-room').value.trim(),
+        token = cleanId(document.getElementById('f-token').value), dbUrl = document.getElementById('f-dburl').value.trim();
+  if (!APP_ID_RE.test(appId) || !room) { openAdv(); err.textContent = 'Für den Link zuerst App-ID (32 Zeichen) und Raum-Code eintragen.'; return; }
+  const p = new URLSearchParams({a: appId, r: room});
+  if (token) p.set('t', token);
+  if (dbUrl) {
+    if (!DB_URL_RE.test(dbUrl)) { openAdv(); err.textContent = 'Die Datenbank-URL sieht nicht nach einer Firebase-Adresse aus (https://…firebaseio.com bzw. …firebasedatabase.app) — sie würde im Link nicht übernommen. Bitte prüfen.'; return; }
+    p.set('d', dbUrl);
+  }
+  const link = location.href.split('#')[0] + '#' + p.toString();
+  try { await navigator.clipboard.writeText(link); err.textContent = 'Einladungslink kopiert ✓ — in den Gruppenchat einfügen.' + (token ? ' (Der Token läuft irgendwann ab.)' : ''); }
+  catch(e) { window.prompt('Einladungslink (Strg+C zum Kopieren):', link); }
+});
+
+// Checked once at load so the usual "can't work here" cases are explained
+// before anyone wastes time on the form (e.g. a link opened inside Discord).
+(function envCheck(){
+  let msg = '';
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+    msg = 'Dieser Browser/diese Ansicht erlaubt keinen Kamera-/Mikrofonzugriff. Bitte den Link direkt in Chrome oder Edge öffnen (nicht in Discord, Messenger o. Ä. eingebettet). Zuhören geht trotzdem.';
+  else if (typeof AgoraRTC === 'undefined') msg = 'Die Agora-Bibliothek konnte nicht geladen werden (Internet/Werbeblocker?). Seite neu laden.';
+  else if (AgoraRTC.checkSystemRequirements && !AgoraRTC.checkSystemRequirements()) msg = 'Dieser Browser wird nicht vollständig unterstützt — bitte aktuelles Chrome oder Edge verwenden.';
+  if (msg) document.getElementById('jerr').textContent = msg;
+})();
+
+// ══════════ UI EVENTS ══════════
 
 // Character picker — refreshed whenever the URL field is edited or the
 // GM-Zugang toggle flips (a DM never gets this picker at all). Debounced
@@ -3984,9 +4164,11 @@ document.getElementById('f-dburl').addEventListener('blur', refreshCharacterPick
 document.getElementById('f-isdm').addEventListener('change', refreshCharacterPicker);
 
 document.getElementById('join-btn').addEventListener('click', async()=>{
-  const appId=document.getElementById('f-appid').value.trim();
+  const swapMsg=fixSwappedCredentials();
+  if(swapMsg){ document.getElementById('jerr').textContent=swapMsg; return; }
+  const appId=cleanId(document.getElementById('f-appid').value);
   const room=document.getElementById('f-room').value.trim();
-  const token=document.getElementById('f-token').value.trim()||null;
+  const token=cleanId(document.getElementById('f-token').value)||null;
   const dbUrl=document.getElementById('f-dburl').value.trim()||null;
   isDM=document.getElementById('f-isdm').checked;
   // The DM never has a linked wallet in this system by design — only
@@ -3995,20 +4177,23 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
   const typedName=document.getElementById('f-name').value.trim();
   const name=typedName||(isDM?'GM':'Runner');
   const err=document.getElementById('jerr');
-  if(appId.length<16){err.textContent='Bitte gültige Agora App-ID eingeben.';return;}
+  if(!APP_ID_RE.test(appId)){openAdv(); updateAdvState(); err.textContent='Die App-ID muss genau 32 Zeichen (0–9, a–f) haben — bitte noch einmal aus der Agora-Konsole kopieren (ohne Leerzeichen).';return;}
   if(!room){err.textContent='Bitte Raum-Code eingeben.';return;}
   err.textContent='';
+  saveJoinPrefs({appId, room, dbUrl: dbUrl||''});
   if(typedName){ try{ localStorage.setItem(NAME_KEY,typedName); }catch(e){} }
   localName=name;
   const btn=document.getElementById('join-btn');
   btn.disabled=true; btn.textContent='Verbinde…';
   try{
     document.getElementById('join-overlay').style.display='none';
-    initScene();
+    initScene(); // idempotent — a failed join + retry must not build a second scene
     // Independent of the Agora join below — a bad/blank URL or a failed
     // connection here must never block or fail the room join itself, so
-    // this is wrapped on its own and never awaited against initAgora.
-    try { initMapSync(dbUrl); } catch(e) { console.warn('CP_Phantom map sync failed to start — staying on standby screen.', e); }
+    // this is wrapped on its own and never awaited against initAgora. Also
+    // started only once: a retry after a failed Agora join must not open a
+    // second Firebase connection on top of the first.
+    if (!mapSync.db) { try { initMapSync(dbUrl); } catch(e) { console.warn('CP_Phantom map sync failed to start — staying on standby screen.', e); } }
     ensureACtx();
     await initAgora(appId,room,name,isDM,token);
     document.getElementById('hud').style.display='flex';
@@ -4048,10 +4233,15 @@ document.getElementById('join-btn').addEventListener('click', async()=>{
     }
   }catch(e){
     console.error(e);
+    // release anything acquired before the failure, or the retry meets a busy device
+    for (const t of [localAudio, localVideo]) { try{ if(t){ t.stop(); t.close(); } }catch(_){} }
+    localAudio = null; localVideo = null;
     try{ if(agoraClient) await agoraClient.leave(); }catch(_){}
     document.getElementById('join-overlay').style.display='flex';
     btn.disabled=false; btn.textContent='▶ VERBINDEN';
-    err.textContent='Verbindungsfehler: '+(e.message||'Agora App-ID prüfen, Testing-Mode aktiv?');
+    openAdv(); // let them see/fix App-ID, token or database URL right away
+    const tech=String((e&&e.message)||e||'').replace(/\s+/g,' ').slice(0,140);
+    err.textContent=describeAgoraError(e)+(tech?'  ['+tech+']':'');
   }
 });
 
@@ -4309,7 +4499,7 @@ document.getElementById('sp-btn').addEventListener('click',()=>{
   document.getElementById('sp-wrap').style.display='block';
 });
 
-['f-appid','f-room','f-token','f-name'].forEach(id=>{
+['f-appid','f-room','f-token','f-name','f-dburl'].forEach(id=>{
   document.getElementById(id).addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('join-btn').click();});
 });
 </script>
