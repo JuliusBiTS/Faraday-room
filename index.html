@@ -134,7 +134,24 @@ body.locked #crosshair{opacity:1}
 #net-banner.show{opacity:1}
 
 /* GM PANEL */
-#gm{position:fixed;right:24px;top:70px;width:270px;background:rgba(6,9,11,.97);border:1px solid rgba(217,138,61,.28);z-index:200;backdrop-filter:blur(10px)}
+#gm{position:fixed;right:24px;top:70px;width:270px;max-height:calc(100vh - 150px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(217,138,61,.3) transparent;background:rgba(6,9,11,.97);border:1px solid rgba(217,138,61,.28);z-index:200;backdrop-filter:blur(10px)}
+/* Funk (local audio files streamed to everyone) — GM panel section */
+#radio-list{max-height:110px;overflow-y:auto;margin-bottom:6px;scrollbar-width:thin}
+.rl-item{display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:11px;color:rgba(217,138,61,.75);border:1px solid transparent;cursor:pointer;word-break:break-all}
+.rl-item:hover{background:rgba(217,138,61,.08)}
+.rl-item.cur{border-color:rgba(217,138,61,.5);color:var(--amb)}
+.rl-item .rl-x{margin-left:auto;opacity:.5;padding:0 4px}
+.rl-item .rl-x:hover{opacity:1;color:var(--r)}
+#radio-now{font-size:10px;letter-spacing:1px;color:rgba(217,138,61,.9);margin:4px 0;min-height:14px;word-break:break-all}
+#radio-sec input[type=range]{width:100%;accent-color:#d98a3d}
+.radio-time{display:flex;justify-content:space-between;font-size:9px;color:rgba(217,138,61,.55);margin-bottom:6px}
+.radio-btns{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:6px}
+.radio-btns .pb{margin:0;padding:7px 0;font-size:13px;letter-spacing:0}
+.radio-opt{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:1px;color:rgba(217,138,61,.7);text-transform:uppercase;margin:4px 0;cursor:pointer}
+.radio-opt input[type=range]{flex:1}
+/* Players: shown while the GM plays a Funk message */
+#radio-badge{position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:200;padding:6px 16px;font-size:11px;letter-spacing:3px;color:var(--amb);background:rgba(20,13,6,.9);border:1px solid rgba(217,138,61,.5);pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap}
+#radio-badge.show{opacity:1}
 #gm::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--amb),transparent)}
 .gm-head{padding:12px 16px;font-family:var(--fd);font-size:9px;font-weight:700;letter-spacing:4px;color:rgba(217,138,61,.85);border-bottom:1px solid rgba(217,138,61,.12);text-transform:uppercase}
 .gm-sec{padding:12px 16px;border-bottom:1px solid rgba(217,138,61,.08)}
@@ -348,6 +365,7 @@ canvas{display:block}
 
 <div id="media-notice"></div>
 <div id="net-banner"></div>
+<div id="radio-badge">📻 FUNKSPRUCH</div>
 <canvas id="c"></canvas>
 <div id="crosshair"></div>
 
@@ -409,6 +427,27 @@ canvas{display:block}
     <button class="pb" id="ad-trigger-btn" title="Hotkey: N">📺 Werbung jetzt zeigen</button>
     <button class="pb" id="ad-toggle-btn">🚫 Werbung stoppen</button>
     <div class="mstat">Hotkey: N · automatisch 1x/Stunde</div>
+  </div>
+  <div class="gm-sec" id="radio-sec">
+    <div class="gstt">📻 Funk (Audiodateien)</div>
+    <input type="file" id="radio-file" accept="audio/*" multiple style="display:none"/>
+    <button class="pb" id="radio-add-btn">➕ Dateien wählen</button>
+    <div id="radio-list"></div>
+    <div id="radio-now">—</div>
+    <input type="range" id="radio-seek" min="0" max="1000" value="0"/>
+    <div class="radio-time"><span id="radio-cur">0:00</span><span id="radio-dur">0:00</span></div>
+    <div class="radio-btns">
+      <button class="pb" id="radio-prev" title="Vorheriger">⏮</button>
+      <button class="pb" id="radio-play" title="Abspielen/Pause (Hotkey: P)">▶</button>
+      <button class="pb" id="radio-stop" title="Stopp">⏹</button>
+      <button class="pb" id="radio-next" title="Nächster">⏭</button>
+    </div>
+    <label class="radio-opt">Pegel <input type="range" id="radio-vol" min="0" max="150" value="100"/></label>
+    <label class="radio-opt"><input type="checkbox" id="radio-fx"/> Funk-Effekt (Rauschen, schmales Band)</label>
+    <label class="radio-opt"><input type="checkbox" id="radio-loop"/> Wiederholen</label>
+    <label class="radio-opt"><input type="checkbox" id="radio-auto"/> Nächste automatisch</label>
+    <label class="radio-opt"><input type="checkbox" id="radio-mon" checked/> Selbst mithören</label>
+    <div class="mstat" id="radio-status">Hotkey: P · läuft über eigenen Kanal, Musik wird währenddessen leiser</div>
   </div>
   <div class="gm-sec">
     <div class="gstt">Tabletopaudio</div>
@@ -789,6 +828,12 @@ const JUMP_FORCE = 6;
 // mic and screen-audio on the SAME uid and later guess which is which on
 // the receiving end is fundamentally unreliable, not just an ordering race.
 const MUSIC_UID_OFFSET = 1000000;
+// The GM's "Funk" channel (local audio files, e.g. prepared radio messages)
+// is published the same way as the shared music — its own Agora client on a
+// derived uid — but in its own range, so a receiver can tell the two apart
+// (own volume slider, music ducks while it plays). Any uid >= this is Funk;
+// any uid in [MUSIC_UID_OFFSET, RADIO_UID_OFFSET) is music.
+const RADIO_UID_OFFSET = 2000000;
 let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
 let gatedMicTrack = null; // the custom Agora track actually published for voice — see buildGatedMicTrack()
 let localPublishReady = false; // set once the very first publish after joining has finished — until then the join flow owns publishing, not the "start mic/camera later" buttons
@@ -811,6 +856,16 @@ const MUSIC_VOLUME_KEY = 'faradayRoomMusicVolume';
 let musicVolume = parseFloat(localStorage.getItem(MUSIC_VOLUME_KEY));
 if (isNaN(musicVolume)) musicVolume = 1;
 let musicVolumeGain = null;
+
+// Funk, receiving side — personal volume (saved), the wired graph, and the
+// GM's "a message is playing" flag, which ducks the ambient music and shows
+// the badge. Local-only preferences, same as the music volume.
+const RADIO_VOLUME_KEY = 'faradayRoomRadioVolume';
+let radioVolume = parseFloat(localStorage.getItem(RADIO_VOLUME_KEY));
+if (isNaN(radioVolume)) radioVolume = 1;
+let radioUid = null, radioRecvGain = null, radioRecvSrc = null;
+let radioPlaying = false;           // set by the GM's 'radio' messages (players only)
+const RADIO_DUCK = 0.3;             // ambient music level (multiplier) while a Funk message plays
 
 // Per-person volume, keyed by their entered name rather than their uid —
 // uid is freshly randomized on every join (see localUID below), so it can
@@ -908,6 +963,10 @@ document.addEventListener('keydown', e => {
   }
   if (e.code === 'KeyM' && isLocked && isDM) {
     document.getElementById('mute-all-btn').click();
+  }
+  // P — play/pause the GM's Funk audio-file player (not a movement key).
+  if (e.code === 'KeyP' && isLocked && isDM) {
+    document.getElementById('radio-play').click();
   }
   // N, not W — W is already "move forward" (WASD), which would otherwise
   // fire an ad on every single step.
@@ -3717,8 +3776,39 @@ function wireAmbient(track) {
 
 function updateMusicIsolation() {
   if (!musicGain || !audioCtx) return;
-  const target = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
-  musicGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.1);
+  // While a Funk message plays the ambient music steps back (a plain
+  // multiplier on top of the location gate, same layering as the music
+  // volume slider) so the message stays intelligible.
+  const target = (isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85) * (radioPlaying ? RADIO_DUCK : 1);
+  musicGain.gain.setTargetAtTime(target, audioCtx.currentTime, radioPlaying ? 0.25 : 0.6);
+}
+
+// Funk receiving side: the GM's audio files arrive on their own uid (see
+// RADIO_UID_OFFSET). Routed straight to the output like the music — no
+// panning, same level for everybody, heard in the secret room too (a message
+// is meant to reach everyone) — through its own personal volume.
+function wireRadio(track) {
+  ensureACtx();
+  unwireRadio();
+  try {
+    radioRecvSrc = audioCtx.createMediaStreamSource(new MediaStream([track.getMediaStreamTrack()]));
+    radioRecvGain = audioCtx.createGain();
+    radioRecvGain.gain.value = radioVolume;
+    radioRecvSrc.connect(radioRecvGain);
+    radioRecvGain.connect(audioCtx.destination);
+  } catch(e) {
+    console.warn('Funk-Audio konnte nicht verbunden werden:', e);
+    try { track.play(); } catch(_) {}
+  }
+}
+function unwireRadio() {
+  if (radioRecvSrc) { try{radioRecvSrc.disconnect();}catch(_){} radioRecvSrc=null; }
+  if (radioRecvGain) { try{radioRecvGain.disconnect();}catch(_){} radioRecvGain=null; }
+}
+function setRadioPlaying(on) {
+  radioPlaying = !!on;
+  const b = document.getElementById('radio-badge');
+  if (b) b.classList.toggle('show', radioPlaying && !isDM);
 }
 
 function setPannerPos(uid) {
@@ -4008,6 +4098,7 @@ function dmResyncRoom() {
   });
   if (forceMuteHeartbeat) sendForceMute(); // a latecomer/reconnecter must not miss a running mute-all
   broadcastBillboard(Math.floor(sharedNow()/1000/BILLBOARD_SLOT_S)); // ...nor start on a different billboard ad than everyone else
+  if (radio.audio && !radio.audio.paused) radioSendState(); // ...nor miss that a Funk message is playing (music ducking + badge)
 }
 
 // ══════════ NETWORK RESILIENCE ══════════
@@ -4134,6 +4225,18 @@ async function initAgora(appId, room, myName, asDM, token) {
     }
     const uid=ru.uid;
 
+    // The GM's Funk channel (own uid range, see RADIO_UID_OFFSET) — checked
+    // before the music branch below, which would otherwise claim it.
+    if (uid >= RADIO_UID_OFFSET) {
+      if (mediaType==='audio') {
+        ensureACtx();
+        ru.audioTrack.stop(); // the SDK's own auto-play would double it unprocessed
+        radioUid = uid;
+        wireRadio(ru.audioTrack);
+      }
+      return;
+    }
+
     // Shared music, published from its own uid (see MUSIC_UID_OFFSET above) —
     // always ambient, no avatar, nothing to disambiguate.
     if (uid >= MUSIC_UID_OFFSET) {
@@ -4197,6 +4300,7 @@ async function initAgora(appId, room, myName, asDM, token) {
   });
 
   agoraClient.on('user-unpublished',(ru,mt)=>{
+    if(mt==='audio' && ru.uid===radioUid){ unwireRadio(); radioUid=null; setRadioPlaying(false); } // the GM's Funk stream went away
     if(mt==='video') detachRemoteVideo(ru.uid);
     if(mt==='audio'&&users[ru.uid]){
       if (users[ru.uid].panner) { try{users[ru.uid].panner.disconnect();}catch(_){} }
@@ -4214,6 +4318,8 @@ async function initAgora(appId, room, myName, asDM, token) {
   });
 
   agoraClient.on('user-left',ru=>{
+    if(ru.uid===radioUid){ unwireRadio(); radioUid=null; setRadioPlaying(false); }
+    if(users[ru.uid]?.isDM) setRadioPlaying(false); // the GM left: no message can still be playing
     if(users[ru.uid]?.grp) scene.remove(users[ru.uid].grp);
     delete users[ru.uid];
     delete pendingPos[ru.uid];
@@ -4296,6 +4402,9 @@ async function initAgora(appId, room, myName, asDM, token) {
          && (!msg.next || (AD_PATH_RE.test(msg.next) && !String(msg.next).includes('..')))){
         billboardOverride = {slot:msg.slot, cur:msg.cur, next:msg.next||msg.cur};
         sharedClockOffsetMs = msg.now - Date.now(); // adopt the GM's clock for the billboard schedule
+      }
+      if(msg.type==='radio' && !isDM && (users[uid]?.isDM || pendingName[uid]?.isDM)){
+        setRadioPlaying(!!msg.playing); // the GM started/stopped a Funk message
       }
       if(msg.type==='adTrigger'){
         if(msg.ts!==lastAdTriggerTs){
@@ -4705,6 +4814,240 @@ function closeBannerAd() {
   clearTimeout(bannerAdHideTimer);
   currentBannerAd = null;
 }
+
+// ══════════ FUNK — GM audio-file player ══════════
+// Plays local audio files (prepared radio messages, stingers, …) from the
+// GM's browser to everyone. The file never leaves the GM's machine: it is
+// decoded by an <audio> element, run through a small Web Audio chain and
+// published as a custom Agora track — on its OWN client/uid (RADIO_UID_OFFSET)
+// so it plays next to the Tabletopaudio ambience instead of replacing it, and
+// so players can set its volume separately. The client joins the channel only
+// when something is first played and leaves again after a minute of silence
+// (Agora bills per joined client-minute).
+//
+// Chain:  <audio> → [dry | radio effect] → level → limiter → ┬→ published track
+//                                                            └→ GM's own speakers (optional)
+// The radio effect is a band-pass (≈400-3200 Hz) with a presence bump, soft
+// clipping and a quiet noise bed that only sounds while a file is playing.
+const radio = {
+  list: [], idx: -1, loadedIdx: -1,
+  audio: null, ctxReady: false,
+  src: null, dry: null, wet: null, level: null, comp: null, dest: null, mon: null, noiseGain: null,
+  client: null, track: null, joining: null, leaveTimer: null,
+  fx: false, seeking: false,
+};
+const RADIO_LEAVE_AFTER_MS = 60000;
+const radioEl = id => document.getElementById(id);
+const fmtTime = s => { s = Math.max(0, Math.floor(s||0)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
+function radioStatus(t) { radioEl('radio-status').textContent = t; }
+
+function radioBuildGraph() {
+  if (radio.ctxReady) return;
+  ensureACtx();
+  const ac = audioCtx;
+  radio.audio = new Audio();
+  radio.audio.preload = 'auto';
+  radio.src = ac.createMediaElementSource(radio.audio);
+
+  radio.dry = ac.createGain(); radio.wet = ac.createGain();
+  radio.dry.gain.value = 1; radio.wet.gain.value = 0;
+  radio.src.connect(radio.dry);
+
+  // radio effect branch
+  const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 420; hp.Q.value = 0.8;
+  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3100; lp.Q.value = 0.8;
+  const peak = ac.createBiquadFilter(); peak.type = 'peaking'; peak.frequency.value = 1600; peak.gain.value = 5; peak.Q.value = 1;
+  const shaper = ac.createWaveShaper();
+  const curve = new Float32Array(1024);
+  for (let i=0;i<curve.length;i++){ const x = i/(curve.length-1)*2-1; curve[i] = Math.tanh(x*2.2)/Math.tanh(2.2); }
+  shaper.curve = curve; shaper.oversample = '2x';
+  radio.src.connect(hp); hp.connect(lp); lp.connect(peak); peak.connect(shaper); shaper.connect(radio.wet);
+
+  // quiet noise bed (looped white noise, band-limited); level follows "playing && effect on"
+  const nb = ac.createBuffer(1, ac.sampleRate*2, ac.sampleRate), nd = nb.getChannelData(0);
+  for (let i=0;i<nd.length;i++) nd[i] = Math.random()*2-1;
+  const ns = ac.createBufferSource(); ns.buffer = nb; ns.loop = true;
+  const nbp = ac.createBiquadFilter(); nbp.type = 'bandpass'; nbp.frequency.value = 1900; nbp.Q.value = 0.5;
+  radio.noiseGain = ac.createGain(); radio.noiseGain.gain.value = 0;
+  ns.connect(nbp); nbp.connect(radio.noiseGain); ns.start();
+
+  radio.level = ac.createGain(); radio.level.gain.value = radioEl('radio-vol').value/100;
+  radio.dry.connect(radio.level); radio.wet.connect(radio.level); radio.noiseGain.connect(radio.level);
+
+  // gentle limiter so boosted levels/effect can't clip the published stream
+  radio.comp = ac.createDynamicsCompressor();
+  radio.comp.threshold.value = -6; radio.comp.knee.value = 6; radio.comp.ratio.value = 12;
+  radio.comp.attack.value = 0.003; radio.comp.release.value = 0.15;
+  radio.level.connect(radio.comp);
+
+  radio.dest = ac.createMediaStreamDestination();
+  radio.comp.connect(radio.dest);
+  radio.mon = ac.createGain(); radio.mon.gain.value = radioEl('radio-mon').checked ? 1 : 0;
+  radio.comp.connect(radio.mon); radio.mon.connect(ac.destination);
+
+  const a = radio.audio;
+  a.addEventListener('play', () => { radioNoiseUpdate(); radioSendState(); radioRenderUI(); });
+  a.addEventListener('pause', () => { radioNoiseUpdate(); radioSendState(); radioRenderUI(); radioScheduleLeave(); });
+  a.addEventListener('timeupdate', radioTimeUI);
+  a.addEventListener('loadedmetadata', radioTimeUI);
+  a.addEventListener('ended', () => {
+    if (radioEl('radio-auto').checked && radio.idx < radio.list.length-1) radioSelect(radio.idx+1, true);
+    else radioRenderUI();
+  });
+  a.addEventListener('error', () => radioStatus('⚠ Datei kann nicht abgespielt werden: ' + (radio.list[radio.idx]?.name || '')));
+  radio.ctxReady = true;
+}
+
+// effect on/off: crossfade the dry and effect branches; noise only while playing
+function radioApplyFx() {
+  if (!radio.ctxReady) return;
+  const t = audioCtx.currentTime;
+  radio.dry.gain.setTargetAtTime(radio.fx ? 0 : 1, t, 0.05);
+  radio.wet.gain.setTargetAtTime(radio.fx ? 1 : 0, t, 0.05);
+  radioNoiseUpdate();
+}
+function radioNoiseUpdate() {
+  if (!radio.ctxReady) return;
+  const on = radio.fx && !radio.audio.paused && !radio.audio.ended;
+  radio.noiseGain.gain.setTargetAtTime(on ? 0.035 : 0, audioCtx.currentTime, 0.08);
+}
+
+// Tells everyone a message is (not) playing — drives the badge and ducks the
+// ambient music on the players' side. Re-sent by dmResyncRoom() for latecomers.
+function radioSendState() {
+  if (!isDM || !agoraClient) return;
+  const playing = !!(radio.audio && !radio.audio.paused && !radio.audio.ended);
+  agoraClient.sendStreamMessage(new TextEncoder().encode(JSON.stringify({type:'radio', playing})), true)
+    .catch(e => console.warn('Funk-Status-Broadcast fehlgeschlagen:', e));
+}
+
+// ── publishing on the Funk channel ──
+async function radioEnsureLive() {
+  clearTimeout(radio.leaveTimer);
+  if (radio.client && radio.track) return;
+  if (radio.joining) return radio.joining;
+  if (!joinedAppId || !joinedRoom) throw new Error('Nicht mit dem Raum verbunden');
+  radio.joining = (async () => {
+    radioBuildGraph();
+    radio.client = AgoraRTC.createClient({mode:'rtc', codec:'vp8'});
+    await withTimeout(radio.client.join(joinedAppId, joinedRoom, joinedToken, localUID + RADIO_UID_OFFSET), 15000, 'Funk-Kanal');
+    radio.track = await AgoraRTC.createCustomAudioTrack({mediaStreamTrack: radio.dest.stream.getAudioTracks()[0], encoderConfig:'high_quality_stereo'});
+    await radio.client.publish(radio.track);
+  })();
+  try { await radio.joining; }
+  catch(e) { await radioLeave(); throw e; }
+  finally { radio.joining = null; }
+}
+async function radioLeave() {
+  clearTimeout(radio.leaveTimer);
+  const t = radio.track, c = radio.client;
+  radio.track = null; radio.client = null;
+  try { if (t) { t.stop(); t.close(); } } catch(_) {}
+  try { if (c) await c.leave(); } catch(_) {}
+}
+function radioScheduleLeave() {
+  clearTimeout(radio.leaveTimer);
+  if (!radio.client) return;
+  radio.leaveTimer = setTimeout(() => { if (!radio.audio || radio.audio.paused) radioLeave(); }, RADIO_LEAVE_AFTER_MS);
+}
+
+// ── player / playlist ──
+function radioRenderList() {
+  const el = radioEl('radio-list'); el.innerHTML = '';
+  radio.list.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'rl-item' + (i === radio.idx ? ' cur' : '');
+    const name = document.createElement('span'); name.textContent = it.name;
+    const x = document.createElement('span'); x.className = 'rl-x'; x.textContent = '✕'; x.title = 'Aus der Liste entfernen';
+    x.addEventListener('click', e => { e.stopPropagation(); radioRemove(i); });
+    row.addEventListener('click', () => radioSelect(i, true));
+    row.appendChild(name); row.appendChild(x); el.appendChild(row);
+  });
+}
+function radioRenderUI() {
+  radioRenderList();
+  const a = radio.audio, playing = !!(a && !a.paused && !a.ended);
+  radioEl('radio-play').textContent = playing ? '⏸' : '▶';
+  radioEl('radio-now').textContent = radio.idx >= 0 ? radio.list[radio.idx].name : '—';
+  if (playing) radioStatus(radio.client && radio.track ? '▶ Läuft für alle' : 'Verbinde …');
+  else if (radio.idx >= 0 && a && a.currentTime > 0 && !a.ended) radioStatus('⏸ Pausiert');
+  else radioStatus('Hotkey: P · läuft über eigenen Kanal, Musik wird währenddessen leiser');
+}
+function radioTimeUI() {
+  const a = radio.audio; if (!a) return;
+  radioEl('radio-cur').textContent = fmtTime(a.currentTime);
+  radioEl('radio-dur').textContent = isFinite(a.duration) ? fmtTime(a.duration) : '0:00';
+  if (!radio.seeking && isFinite(a.duration) && a.duration > 0) radioEl('radio-seek').value = Math.round(a.currentTime/a.duration*1000);
+}
+function radioAdd(files) {
+  for (const f of files) {
+    if (!/^audio\//.test(f.type) && !/\.(mp3|wav|ogg|m4a|aac|flac|opus|webm)$/i.test(f.name)) continue;
+    radio.list.push({ name: f.name.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(f) });
+  }
+  if (radio.idx < 0 && radio.list.length) radio.idx = 0;
+  radioRenderUI();
+}
+function radioRemove(i) {
+  const it = radio.list[i]; if (!it) return;
+  if (i === radio.idx && radio.audio) { radio.audio.pause(); radio.loadedIdx = -1; radio.audio.removeAttribute('src'); radio.audio.load(); }
+  try { URL.revokeObjectURL(it.url); } catch(_) {}
+  radio.list.splice(i, 1);
+  if (radio.loadedIdx > i) radio.loadedIdx--;
+  radio.idx = radio.list.length ? Math.min(i === radio.idx ? i : (radio.idx > i ? radio.idx-1 : radio.idx), radio.list.length-1) : -1;
+  radioRenderUI(); radioTimeUI();
+}
+function radioLoad(i) {
+  radioBuildGraph();
+  radio.idx = i; radio.loadedIdx = i;
+  radio.audio.src = radio.list[i].url;
+  radio.audio.loop = radioEl('radio-loop').checked;
+  radioEl('radio-seek').value = 0;
+}
+async function radioSelect(i, autoplay) {
+  if (i < 0 || i >= radio.list.length) return;
+  radioLoad(i);
+  radioRenderUI();
+  if (autoplay) await radioPlay();
+}
+async function radioPlay() {
+  if (!radio.list.length) { radioStatus('Erst Dateien wählen'); return; }
+  if (radio.idx < 0) radio.idx = 0;
+  radioBuildGraph();
+  if (radio.loadedIdx !== radio.idx) radioLoad(radio.idx);
+  radioStatus('Verbinde …');
+  try { await radioEnsureLive(); }
+  catch(e) { console.warn('Funk-Kanal fehlgeschlagen:', e); radioStatus('⚠ Funk-Kanal: ' + describeAgoraError(e)); return; }
+  try { await radio.audio.play(); } catch(e) { console.warn('Abspielen fehlgeschlagen:', e); radioStatus('⚠ Abspielen fehlgeschlagen'); }
+}
+function radioTogglePlay() {
+  if (radio.audio && !radio.audio.paused) radio.audio.pause();
+  else radioPlay();
+}
+function radioStop() {
+  if (!radio.audio) return;
+  radio.audio.pause(); radio.audio.currentTime = 0;
+  radioTimeUI(); radioRenderUI();
+}
+
+radioEl('radio-add-btn').addEventListener('click', () => radioEl('radio-file').click());
+radioEl('radio-file').addEventListener('change', e => { radioAdd(e.target.files); e.target.value = ''; });
+radioEl('radio-play').addEventListener('click', radioTogglePlay);
+radioEl('radio-stop').addEventListener('click', radioStop);
+radioEl('radio-next').addEventListener('click', () => { if (radio.idx < radio.list.length-1) radioSelect(radio.idx+1, !!(radio.audio && !radio.audio.paused)); });
+radioEl('radio-prev').addEventListener('click', () => {
+  // like most players: a restart if we're a few seconds in, else the previous file
+  if (radio.audio && radio.audio.currentTime > 3) { radio.audio.currentTime = 0; return; }
+  if (radio.idx > 0) radioSelect(radio.idx-1, !!(radio.audio && !radio.audio.paused));
+});
+radioEl('radio-seek').addEventListener('input', () => { radio.seeking = true; const a = radio.audio; if (a && isFinite(a.duration)) radioEl('radio-cur').textContent = fmtTime(radioEl('radio-seek').value/1000*a.duration); });
+radioEl('radio-seek').addEventListener('change', () => {
+  const a = radio.audio; radio.seeking = false;
+  if (a && isFinite(a.duration)) a.currentTime = radioEl('radio-seek').value/1000*a.duration;
+});
+radioEl('radio-vol').addEventListener('input', () => { if (radio.level) radio.level.gain.setTargetAtTime(radioEl('radio-vol').value/100, audioCtx.currentTime, 0.03); });
+radioEl('radio-fx').addEventListener('change', () => { radio.fx = radioEl('radio-fx').checked; radioApplyFx(); });
+radioEl('radio-loop').addEventListener('change', () => { if (radio.audio) radio.audio.loop = radioEl('radio-loop').checked; });
+radioEl('radio-mon').addEventListener('change', () => { if (radio.mon) radio.mon.gain.setTargetAtTime(radioEl('radio-mon').checked ? 1 : 0, audioCtx.currentTime, 0.03); });
 
 loadAdLibrary(); // pick up whatever is in ads/ right now (async; the built-in list serves until it lands)
 
@@ -5294,6 +5637,31 @@ function renderVolPanel() {
   musicRow.appendChild(musicLabel); musicRow.appendChild(musicSlider);
   list.appendChild(musicRow);
 
+  // Personal Funk volume (the GM's audio-file messages) — players only, the
+  // GM never receives their own stream. Like the music row: local, saved.
+  if (!isDM) {
+    const radioRow = document.createElement('div');
+    radioRow.className = 'vol-row';
+    const radioLabel = document.createElement('div');
+    radioLabel.className = 'vol-label';
+    const radioPct = Math.round(radioVolume * 100);
+    const radioNameSpan = document.createElement('span');
+    radioNameSpan.textContent = '📻 Funk';
+    const radioPctSpan = document.createElement('span');
+    radioPctSpan.textContent = radioPct + '%';
+    radioLabel.appendChild(radioNameSpan); radioLabel.appendChild(radioPctSpan);
+    const radioSlider = document.createElement('input');
+    radioSlider.type='range'; radioSlider.min='0'; radioSlider.max='200'; radioSlider.value=String(radioPct);
+    radioSlider.addEventListener('input', ()=>{
+      radioVolume = radioSlider.value/100;
+      radioPctSpan.textContent = radioSlider.value + '%';
+      if (radioRecvGain) radioRecvGain.gain.value = radioVolume;
+      try{ localStorage.setItem(RADIO_VOLUME_KEY, String(radioVolume)); }catch(e){}
+    });
+    radioRow.appendChild(radioLabel); radioRow.appendChild(radioSlider);
+    list.appendChild(radioRow);
+  }
+
   // Personal mic noise gate — same reasoning as the music row above (own
   // setting, nothing to do with other players, always shown). Mainly for
   // two people sitting in the same physical room on separate devices: cuts
@@ -5519,6 +5887,8 @@ document.getElementById('token-file').addEventListener('change', async(e)=>{
 document.getElementById('btn-leave').addEventListener('click',async()=>{
   netLeaving = true; // the leave below fires DISCONNECTED — must not trigger an auto-rejoin
   try{
+    if(radio.audio) radio.audio.pause();
+    await radioLeave(); // the GM's Funk client, if it was ever started
     if(gatedMicTrack){gatedMicTrack.stop();gatedMicTrack.close();}
     if(localAudio){localAudio.stop();localAudio.close();}
     if(localVideo){localVideo.stop();localVideo.close();}
