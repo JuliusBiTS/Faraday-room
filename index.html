@@ -4213,11 +4213,13 @@ async function initAgora(appId, room, myName, asDM, token) {
     // on whatever's actually publishing (checked against ru.hasVideo) once
     // the tab is visible again, so this isn't a permanent miss, just a defer.
     if (mediaType==='video' && document.hidden) return;
-    // The GM's own Funk stream (their audio-file player publishes on a second
-    // client in this same channel) must never come back to the GM: it is
-    // already monitored locally, so subscribing would play every file a
-    // second time, delayed.
-    if (isDM && ru.uid >= RADIO_UID_OFFSET) return;
+    // The GM's own shared-music and Funk streams (tab audio / audio files are
+    // published on extra clients in this same channel, uids >= MUSIC_UID_OFFSET)
+    // must never come back to the GM: the GM already hears the source directly
+    // (the tab itself / the Funk monitor), so subscribing would play everything
+    // a second time, delayed. Only the GM publishes these, so on the GM's
+    // client any such uid is their own.
+    if (isDM && ru.uid >= MUSIC_UID_OFFSET) return;
     try {
       await agoraClient.subscribe(ru, mediaType);
     } catch(e) {
