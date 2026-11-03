@@ -645,6 +645,15 @@ let AD_LIBRARY = [
   { image: 'ads/friend.png', jingle: 'ads/friend.wav', name: 'Friend' },
   { image: 'ads/workfriend.png', jingle: 'ads/workfriend.wav', name: 'Workfriend' },
 ];
+// Billboard-only images (ads/billboard/): shown on the south-wall billboard in
+// the same rotation as the ads, but NEVER picked for the full-screen or banner
+// ads — those are the skippable/paid ones, these are scenery (mission posters,
+// in-world billboards). Built-in fallback below; like ads/, the real list is
+// read from the folder at load (see loadAdLibrary).
+let BILLBOARD_ONLY = [
+  'bsnc_attack_poster', 'crest_poster', 'crest_victory_billboard', 'ferro_attack_poster',
+  'ferro_poster', 'lattice_billboard', 'painted_over_billboard',
+].map(n => ({ image: 'ads/billboard/'+n+'.png', jingle: null, name: n }));
 // Temporary: only one jingle exists so far, so every ad shares it instead
 // of each entry's own (mostly-not-yet-recorded) jingle field. Set this
 // back to null once more per-ad jingles exist, to fall back to entry.jingle.
@@ -659,29 +668,34 @@ const AD_JINGLE_SHARED = 'ads/Look at the Ad.mp3';
 // place, and a file the listing shows but the site hasn't deployed yet
 // (push → Pages lag) is probed first and simply skipped until it loads.
 const AD_IMAGE_RE = /\.(png|jpe?g|webp|gif)$/i;
-const AD_LIST_CACHE_KEY = 'faradayRoomAdList', AD_LIST_TTL_MS = 10*60*1000;
+const AD_LIST_CACHE_KEY = 'faradayRoomAdList2', AD_LIST_TTL_MS = 10*60*1000;
 function adRepoSlug() {
   const m = location.hostname.match(/^([^.]+)\.github\.io$/i);
   const repo = location.pathname.split('/').filter(Boolean)[0];
   return (m && repo && !/\.html?$/i.test(repo)) ? m[1]+'/'+repo : 'JuliusBiTS/Faraday-room';
 }
+const adImageNames = list => list.filter(f => f.type==='file' && AD_IMAGE_RE.test(f.name)).map(f => f.name).sort();
+// -> {names: ads/*, bbNames: ads/billboard/* — or null when that folder can't be listed}
 async function listAdFiles() {
   if (!/[?&]refreshads\b/.test(location.search)) {
     try {
       const c = JSON.parse(localStorage.getItem(AD_LIST_CACHE_KEY));
-      if (c && Array.isArray(c.names) && Date.now()-c.t < AD_LIST_TTL_MS) return c.names;
+      if (c && Array.isArray(c.names) && Date.now()-c.t < AD_LIST_TTL_MS) return {names: c.names, bbNames: Array.isArray(c.bbNames) ? c.bbNames : null};
     } catch(e) {}
   }
-  const r = await fetch('https://api.github.com/repos/'+adRepoSlug()+'/contents/ads');
+  const base = 'https://api.github.com/repos/'+adRepoSlug()+'/contents/ads';
+  const [r, rb] = await Promise.all([fetch(base), fetch(base+'/billboard').catch(() => null)]);
   if (!r.ok) throw new Error('ads/-Listing: HTTP '+r.status);
-  const names = (await r.json()).filter(f => f.type==='file' && AD_IMAGE_RE.test(f.name)).map(f => f.name).sort();
-  try { localStorage.setItem(AD_LIST_CACHE_KEY, JSON.stringify({t:Date.now(), names})); } catch(e) {}
-  return names;
+  const names = adImageNames(await r.json());
+  // a missing/unlistable billboard folder just keeps the built-in billboard list
+  const bbNames = (rb && rb.ok) ? adImageNames(await rb.json()) : null;
+  try { localStorage.setItem(AD_LIST_CACHE_KEY, JSON.stringify({t:Date.now(), names, bbNames})); } catch(e) {}
+  return {names, bbNames};
 }
 const probeImage = url => new Promise(res => { const i = new Image(); i.onload = () => res(true); i.onerror = () => res(false); i.src = url; });
 async function loadAdLibrary() {
   try {
-    const names = await listAdFiles();
+    const {names, bbNames} = await listAdFiles();
     if (!names.length) return;
     const known = new Map(AD_LIBRARY.map(a => [a.image, a]));
     const entries = await Promise.all(names.map(async n => {
@@ -693,10 +707,22 @@ async function loadAdLibrary() {
     }));
     const next = entries.filter(Boolean);
     if (!next.length) return;
+    // ads/billboard/: same rules (listed but not deployed yet = skipped)
+    let nextBB = BILLBOARD_ONLY;
+    if (bbNames) {
+      const knownBB = new Map(BILLBOARD_ONLY.map(a => [a.image, a]));
+      nextBB = (await Promise.all(bbNames.map(async n => {
+        const image = 'ads/billboard/'+n;
+        if (knownBB.has(image)) return knownBB.get(image);
+        if (!(await probeImage(image))) return null;
+        return { image, jingle: null, name: n.replace(/\.[^.]+$/, '') };
+      }))).filter(Boolean);
+    }
     AD_LIBRARY = next;
-    lastBillboardBroadcastSlot = null; // GM: re-announce this slot's ads from the new list
-    AD_LIBRARY.forEach(ad => billboardImg(ad.image));
-    console.info('Werbung geladen aus ads/: '+AD_LIBRARY.length+' Motive');
+    BILLBOARD_ONLY = nextBB;
+    lastBillboardBroadcastSlot = null; // GM: re-announce this slot's ads from the new lists
+    AD_LIBRARY.concat(BILLBOARD_ONLY).forEach(ad => billboardImg(ad.image));
+    console.info('Werbung geladen aus ads/: '+AD_LIBRARY.length+' Motive + '+BILLBOARD_ONLY.length+' nur für die Plakatwand');
   } catch(e) { console.warn('ads/ konnte nicht gelesen werden — nutze die eingebaute Liste:', e); }
 }
 
@@ -704,7 +730,7 @@ async function loadAdLibrary() {
 // PATH rather than a list position (positions only match while every client
 // has an identical list). A received path is only accepted if it looks like
 // an image directly inside ads/ — never an arbitrary URL.
-const AD_PATH_RE = /^ads\/[^\/\\]+\.(png|jpe?g|webp|gif)$/i;
+const AD_PATH_RE = /^ads\/(billboard\/)?[^\/\\]+\.(png|jpe?g|webp|gif)$/i;
 function resolveAd(ref) {
   if (typeof ref === 'number') return AD_LIBRARY[ref] || null;
   if (typeof ref === 'string' && AD_PATH_RE.test(ref) && !ref.includes('..'))
@@ -2794,24 +2820,25 @@ function mulberry32(a) {
   return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
     t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
 }
-let billboardOrderCache = {lib:null, round:null, order:[]};
+let billboardOrderCache = {lib:null, bb:null, round:null, order:[]};
 function billboardRound(paths, round) { // seeded Fisher-Yates of one round
   const o = paths.slice(), rnd = mulberry32(round*2654435761 >>> 0);
   for (let i=o.length-1;i>0;i--) { const j = Math.floor(rnd()*(i+1)); [o[i],o[j]] = [o[j],o[i]]; }
   return o;
 }
 function billboardPick(slot) {
-  const paths = AD_LIBRARY.map(a => a.image).sort();
+  // the billboard rotates through the ads AND the billboard-only images
+  const paths = AD_LIBRARY.concat(BILLBOARD_ONLY).map(a => a.image).sort();
   const N = paths.length;
   if (!N) return null;
   if (N === 1) return paths[0];
   const round = Math.floor(slot/N), pos = slot - round*N;
-  if (billboardOrderCache.lib !== AD_LIBRARY || billboardOrderCache.round !== round) {
+  if (billboardOrderCache.lib !== AD_LIBRARY || billboardOrderCache.bb !== BILLBOARD_ONLY || billboardOrderCache.round !== round) {
     const order = billboardRound(paths, round);
     // never the same ad twice across a round boundary (the previous round's
     // last entry is unaffected by this swap, so one level of lookback is exact)
     if (N > 2 && order[0] === billboardRound(paths, round-1)[N-1]) [order[0],order[1]] = [order[1],order[0]];
-    billboardOrderCache = {lib:AD_LIBRARY, round, order};
+    billboardOrderCache = {lib:AD_LIBRARY, bb:BILLBOARD_ONLY, round, order};
   }
   return billboardOrderCache.order[pos];
 }
@@ -2843,7 +2870,7 @@ function buildBillboard(w) {
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(BW,BH), new THREE.MeshBasicMaterial({map:billboardTexture}));
   screen.position.set(w.mid[0]+offset.x,by,w.mid[1]+offset.z); screen.rotation.y=w.ry; scene.add(screen);
 
-  AD_LIBRARY.forEach(ad => billboardImg(ad.image)); // start decoding everything up front
+  AD_LIBRARY.concat(BILLBOARD_ONLY).forEach(ad => billboardImg(ad.image)); // start decoding everything up front
 }
 
 // Draws `img` centered and letterboxed (never distorted) into a W x H
@@ -2861,7 +2888,7 @@ function drawAdContain(ctx, img, W, H, alpha) {
 }
 
 function updateBillboard(dt) {
-  if (!billboardCtx || !AD_LIBRARY.length) return;
+  if (!billboardCtx || !(AD_LIBRARY.length + BILLBOARD_ONLY.length)) return;
   const now = sharedNow()/1000;
   const slot = Math.floor(now/BILLBOARD_SLOT_S), t = now - slot*BILLBOARD_SLOT_S;
   if (isDM && slot !== lastBillboardBroadcastSlot && agoraClient) { lastBillboardBroadcastSlot = slot; broadcastBillboard(slot); }
