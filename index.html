@@ -434,7 +434,8 @@ canvas{display:block}
   </div>
   <div class="gm-sec" id="elec-sec">
     <div class="gstt">🗳 Wahlabend (Ferro vs. Crest)</div>
-    <button class="pb" id="elec-toggle">▶ Wahl-Screen starten</button>
+    <button class="pb" id="elec-toggle">▶ Wahlabend starten</button>
+    <div class="mstat" style="padding:0 0 8px">schaltet Plakatwand, Laufband und die ganze Raumdeko um</div>
     <div class="elec-segs" id="elec-segs"></div>
     <div class="elec-row">
       <input class="pi" id="elec-ferro" type="text" inputmode="decimal" placeholder="Ferro %" autocomplete="off"/>
@@ -443,6 +444,7 @@ canvas{display:block}
     <button class="pb" id="elec-set">Zahlen setzen</button>
     <input class="pi" id="elec-news" type="text" maxlength="110" placeholder="Eilmeldung fürs Laufband …" autocomplete="off"/>
     <button class="pb" id="elec-news-btn">📰 Eilmeldung senden / leeren</button>
+    <button class="pb" id="elec-burst">🎈 Ballons, Konfetti &amp; Feuerwerk</button>
     <div class="mstat" id="elec-status">—</div>
   </div>
   <div class="gm-sec" id="radio-sec">
@@ -1081,16 +1083,42 @@ function initScene() {
   buildAlarmBeacon();
 
   doorWallInfo = octWallDefs()[2]; // east wall — doubles as the hidden passage behind the archive
+  themeCapture = true;
   buildRoom();
   buildFurniture();
+  themeCapture = false;
+  buildElectionDecor();
   buildParticles();
   window.addEventListener('resize', onResize);
   animate();
 }
 
 // ══════════ GEOMETRY HELPERS ══════════
+// Wahlabend party palette: while the room is being built (themeCapture), every
+// neon-trim material made through mat() — cyan / dim cyan / amber / the
+// billboard's pink — is registered here so election mode can re-tint all of it
+// at once, and hand it back untouched afterwards (see updateElectionTheme).
+// Avatars and anything built later are never captured, so players keep their
+// own colours.
+let themeCapture = false;
+const themedMats = [];
+const US_RED = new THREE.Color(0xff2038), US_WHITE = new THREE.Color(0xf2f4ff), US_BLUE = new THREE.Color(0x2f62ff);
+const US_CYCLE = [US_RED, US_WHITE, US_BLUE];
+const _usTmp = new THREE.Color();
+// smooth red -> white -> blue -> red cycle, `phase` in whole cycles
+function usColor(phase, out) {
+  const p = (((phase % 1) + 1) % 1) * 3, i = Math.floor(p), f = p - i;
+  return out.copy(US_CYCLE[i]).lerp(US_CYCLE[(i+1) % 3], f*f*(3-2*f));
+}
+function themeReg(m, emissive, color) {
+  themedMats.push({ m, emissive: new THREE.Color(emissive), color: new THREE.Color(color),
+    both: color === emissive, dim: emissive === CYAN_DIM, ph: themedMats.length*0.083 });
+}
+const THEMED_EMISSIVES = [CYAN, CYAN_DIM, AMBER, 0xff2f9e];
 function mat(color, emissive=0x000000, emI=0, rough=0.85, metal=0.1, side=THREE.FrontSide) {
-  return new THREE.MeshStandardMaterial({color, emissive, emissiveIntensity:emI, roughness:rough, metalness:metal, side});
+  const m = new THREE.MeshStandardMaterial({color, emissive, emissiveIntensity:emI, roughness:rough, metalness:metal, side});
+  if (themeCapture && THEMED_EMISSIVES.includes(emissive)) themeReg(m, emissive, color);
+  return m;
 }
 
 function octVerts() {
@@ -1290,7 +1318,7 @@ const NEWS_TICKER_SPEED = 140; // canvas px/sec
 function setTickerHeadlines(list) {
   if (!newsTickerCtx) return;
   newsTickerCtx.font = `${Math.round(newsTickerCanvas.height*0.5)}px 'Share Tech Mono', monospace`;
-  newsTickerFullText = list.join('     //     ');
+  newsTickerFullText = list.join(election.active ? '     ★     ' : '     //     ');
   const textWidth = newsTickerCtx.measureText(newsTickerFullText).width;
   newsTickerPeriod = textWidth + textWidth*0.15; // trailing gap before the loop repeats
   newsTickerOffset = 0;
@@ -1320,12 +1348,18 @@ function updateNewsTicker(dt) {
   const ctx = newsTickerCtx, c = newsTickerCanvas, W=c.width, H=c.height;
   newsTickerOffset = (newsTickerOffset + NEWS_TICKER_SPEED*dt) % newsTickerPeriod;
 
-  ctx.fillStyle = '#050708'; ctx.fillRect(0,0,W,H);
-  ctx.strokeStyle = 'rgba(47,216,232,0.25)'; ctx.lineWidth = 2;
-  ctx.strokeRect(1,1,W-2,H-2);
+  const party = election.active; // Wahlabend: navy strip, red + blue frame, white type
+  ctx.fillStyle = party ? '#070b1c' : '#050708'; ctx.fillRect(0,0,W,H);
+  ctx.lineWidth = 2;
+  if (party) {
+    ctx.strokeStyle = 'rgba(255,32,56,0.85)'; ctx.strokeRect(1,1,W-2,H-2);
+    ctx.strokeStyle = 'rgba(47,98,255,0.85)'; ctx.strokeRect(4,4,W-8,H-8);
+  } else {
+    ctx.strokeStyle = 'rgba(47,216,232,0.25)'; ctx.strokeRect(1,1,W-2,H-2);
+  }
   ctx.font = `${Math.round(H*0.5)}px 'Share Tech Mono', monospace`;
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(47,216,232,0.85)';
+  ctx.fillStyle = party ? 'rgba(255,255,255,0.95)' : 'rgba(47,216,232,0.85)';
   try { ctx.letterSpacing = '2px'; } catch(e) {} // unsupported in older browsers — purely cosmetic, safe to skip
   for (let x = -newsTickerOffset; x < W; x += newsTickerPeriod) {
     ctx.fillText(newsTickerFullText, x, H/2);
@@ -2977,7 +3011,10 @@ const ELECTION_SEGMENTS = [
 ];
 const ELECTION_FERRO_C = '#ffb13d', ELECTION_CREST_C = '#2fd8e8';
 // Crest's share is always 100 - Ferro's. ferro === null = no numbers yet.
-const election = { active:false, seg:0, ferro:null, counted:0, banner:ELECTION_SEGMENTS[0].banner, custom:'' };
+// burst > 0 = the victory finale (balloon drop, confetti, fireworks) is running; every
+// change of the number replays it. The GM zeroes it again when leaving the result segment.
+const election = { active:false, seg:0, ferro:null, counted:0, banner:ELECTION_SEGMENTS[0].banner, custom:'', burst:0 };
+const electionFx = { on:false, t0:0 }; // local finale clock
 const electionShown = { ferro:50, counted:0 }; // what is drawn right now: eases towards the real numbers
 const electionClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -2998,6 +3035,10 @@ function electionApply(n) {
   election.counted = Number.isFinite(n.counted) ? electionClamp(n.counted, 0, 100) : 0;
   election.banner = typeof n.banner === 'string' ? n.banner.slice(0, 60) : '';
   election.custom = typeof n.custom === 'string' ? n.custom.slice(0, 110) : '';
+  const prevBurst = election.burst;
+  election.burst = Number.isInteger(n.burst) ? electionClamp(n.burst, 0, 1e6) : 0;
+  if (!election.active || election.burst === 0) electionFx.on = false;
+  else if (election.burst !== prevBurst) { electionFx.on = true; electionFx.t0 = performance.now(); } // re-sends of the same number don't replay it
   if (election.active && !wasActive) { electionShown.ferro = 50; electionShown.counted = 0; } // bars sweep in
   if (before !== election.active+'|'+election.seg+'|'+election.custom) setTickerHeadlines(electionTickerList());
 }
@@ -3014,7 +3055,46 @@ function electionGM(patch) { // GM: change, show locally, tell everyone
 }
 function electionGoSeg(i) {
   const s = ELECTION_SEGMENTS[i];
-  electionGM({active:true, seg:i, ferro:s.ferro, counted:s.counted, banner:s.banner});
+  // the result segment fires the victory finale; any other segment ends it
+  electionGM({active:true, seg:i, ferro:s.ferro, counted:s.counted, banner:s.banner,
+    burst: i === ELECTION_SEGMENTS.length-1 ? election.burst+1 : 0});
+}
+
+function electionStar(ctx, cx, cy, r) { // 5-point star path, filled with the current fillStyle
+  ctx.beginPath();
+  for (let j = 0; j < 10; j++) {
+    const a = -Math.PI/2 + j*Math.PI/5, rr = j % 2 ? r*0.42 : r;
+    j ? ctx.lineTo(cx + Math.cos(a)*rr, cy + Math.sin(a)*rr) : ctx.moveTo(cx + Math.cos(a)*rr, cy + Math.sin(a)*rr);
+  }
+  ctx.closePath(); ctx.fill();
+}
+// Victory fireworks on the billboard — a pure function of the finale clock `t`
+// (eight bursts, 1.7 s apart), so there is no particle state to keep.
+function electionFireworks(ctx, W, H, t) {
+  const cols = ['#ff3a4e', '#ffffff', '#4d7bff', '#ffd36b'];
+  ctx.lineCap = 'round';
+  for (let b = 0; b < 8; b++) {
+    const e = t - (0.4 + b*1.7);
+    if (e < 0 || e > 2.0) continue;
+    const cx = W*(0.1 + ((b*0.381966 + 0.17) % 1)*0.8), cy = H*(0.24 + ((b*0.618 + 0.3) % 1)*0.38);
+    const R = H*0.42*(1 - Math.exp(-e*3.2)), drop = H*0.12*e*e, fade = Math.max(0, 1 - e/2.0);
+    if (e < 0.25) { // launch flash
+      ctx.globalAlpha = (1 - e/0.25)*0.9; ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(cx, cy, H*0.05*(0.4 + e*4), 0, Math.PI*2); ctx.fill();
+    }
+    // outer ring in the burst's colour, inner ring in white / gold
+    [[26, 1, cols[b % 4], 5, 0.75], [14, 0.62, b % 2 ? '#ffd36b' : '#ffffff', 4, 0.5]].forEach(([n, k, col, lw, len]) => {
+      ctx.strokeStyle = col; ctx.globalAlpha = fade; ctx.lineWidth = lw;
+      ctx.beginPath();
+      for (let j = 0; j < n; j++) {
+        const a = j/n*Math.PI*2 + b + (k < 1 ? 0.12 : 0), r1 = R*k, r0 = r1 - R*k*(1 - len)*0.6;
+        ctx.moveTo(cx + Math.cos(a)*r0, cy + Math.sin(a)*r0 + drop);
+        ctx.lineTo(cx + Math.cos(a)*r1, cy + Math.sin(a)*r1 + drop);
+      }
+      ctx.stroke();
+    });
+  }
+  ctx.globalAlpha = 1;
 }
 
 // Fits `text` into maxW by shrinking the font if needed (leaves ctx.font set).
@@ -3033,7 +3113,10 @@ function drawElection(dt) {
   const blink = Math.floor(sharedNow()/1000) % 2;
   // like the ads: only redraw + re-upload when the picture changes (the key can
   // never equal an ad key, so switching back to ads always repaints)
-  const key = 'E|'+S.ferro.toFixed(2)+'|'+S.counted.toFixed(1)+'|'+T.seg+'|'+hasNums+'|'+T.banner+'|'+blink;
+  // the finale's fireworks redraw ~20x/s for their 16 seconds, nothing else does
+  const fxT = electionFx.on ? (performance.now() - electionFx.t0)/1000 : -1;
+  const fxTick = fxT >= 0 && fxT < 16 ? Math.floor(fxT*20) : -1;
+  const key = 'E|'+S.ferro.toFixed(2)+'|'+S.counted.toFixed(1)+'|'+T.seg+'|'+hasNums+'|'+T.banner+'|'+blink+'|'+fxTick;
   if (key === billboardDrawKey) return;
   billboardDrawKey = key;
 
@@ -3043,21 +3126,32 @@ function drawElection(dt) {
   const fmt = v => v.toFixed(1).replace('.', ',');
   ctx.fillStyle = '#04070a'; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = 'rgba(255,255,255,0.025)'; for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
-  ctx.strokeStyle = 'rgba(47,216,232,0.3)'; ctx.lineWidth = 3; ctx.strokeRect(2, 2, W-4, H-4);
+  if (fxTick >= 0) electionFireworks(ctx, W, H, fxT);
+  // red / white / blue triple frame
+  [['#d42a3f',2.5,5],['#f2f4ff',1.5,10],['#2b55d9',2.5,15]].forEach(([c, lw, inset]) => {
+    ctx.strokeStyle = c; ctx.lineWidth = lw*2; ctx.strokeRect(inset, inset, W-inset*2, H-inset*2);
+  });
   ctx.textBaseline = 'middle';
 
   // header: channel + title left, LIVE + clock right
   ctx.textAlign = 'left';
   ctx.font = `900 ${H*0.075}px ${OR}`; ctx.fillStyle = '#2fd8e8'; ctx.fillText('N54', W*0.04, H*0.085);
   const n54w = ctx.measureText('N54').width;
-  ctx.font = `700 ${H*0.045}px ${OR}`; ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  ctx.fillText('WAHLNACHT · NIGHT CITY', W*0.04 + n54w + W*0.02, H*0.088);
+  const title = 'DECISION NIGHT', tx = W*0.04 + n54w + W*0.045;
+  ctx.font = `700 ${H*0.045}px ${OR}`; ctx.fillStyle = '#ffffff';
+  ctx.fillText(title, tx, H*0.088);
+  const tww = ctx.measureText(title).width;
+  ctx.fillStyle = '#ffd36b';
+  for (let k = 0; k < 2; k++) electionStar(ctx, k ? tx + tww + H*0.04 : tx - H*0.04, H*0.088, H*0.026);
   ctx.textAlign = 'right';
   ctx.font = `700 ${H*0.075}px ${MO}`; ctx.fillStyle = '#ffffff'; ctx.fillText(seg.time, W*0.96, H*0.085);
   const tw = ctx.measureText(seg.time).width;
   ctx.font = `700 ${H*0.045}px ${OR}`; ctx.fillStyle = blink ? '#ff3b4e' : 'rgba(255,59,78,0.35)';
   ctx.fillText('● LIVE', W*0.96 - tw - W*0.025, H*0.088);
-  ctx.fillStyle = 'rgba(47,216,232,0.35)'; ctx.fillRect(W*0.04, H*0.165, W*0.92, 2);
+  // candy-stripe rule under the header
+  for (let x = W*0.04, k = 0; x < W*0.96; x += W*0.92/46, k++) {
+    ctx.fillStyle = k % 2 ? '#f2f4ff' : '#d42a3f'; ctx.fillRect(x, H*0.162, Math.min(W*0.92/46, W*0.96 - x), 5);
+  }
 
   // the two candidates
   const cols = [
@@ -3092,6 +3186,11 @@ function drawElection(dt) {
     ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff';
     electionFont(ctx, T.banner, 900, OR, H*0.075, W*0.88);
     ctx.fillText(T.banner, W/2, H*0.833);
+    if (T.seg === ELECTION_SEGMENTS.length-1) { // the result: red BREAKING tab on the band
+      ctx.fillStyle = '#d42a3f'; ctx.fillRect(W*0.04, H*0.722, W*0.2, H*0.052);
+      ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.font = `800 ${H*0.034}px ${OR}`;
+      ctx.fillText('★ BREAKING ★', W*0.14, H*0.749);
+    }
   } else if (hasNums) {
     ctx.textAlign = 'center';
     const txt = lead ? (lead === 'F' ? 'FERRO FÜHRT +' : 'CREST FÜHRT +')+fmt(Math.abs(f - c)) : 'GLEICHSTAND';
@@ -3101,17 +3200,216 @@ function drawElection(dt) {
 
   // footer: counted progress + Hochrechnung number
   ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(W*0.04, H*0.925, W*0.92, H*0.012);
-  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.fillRect(W*0.04, H*0.925, W*0.92*S.counted/100, H*0.012);
+  { // counted progress as stars-and-stripes: red / white stripes
+    const px0 = W*0.04, pw = W*0.92*S.counted/100, sw = W*0.012;
+    for (let x = px0, k = 0; x < px0 + pw; x += sw, k++) {
+      ctx.fillStyle = k % 2 ? '#f2f4ff' : '#d42a3f'; ctx.fillRect(x, H*0.923, Math.min(sw, px0 + pw - x), H*0.016);
+    }
+  }
   ctx.font = `700 ${H*0.04}px ${MO}`; ctx.fillStyle = 'rgba(255,255,255,0.65)';
   ctx.textAlign = 'left';  ctx.fillText(Math.round(S.counted)+' % AUSGEZÄHLT', W*0.04, H*0.965);
   ctx.textAlign = 'right'; ctx.fillText('HOCHRECHNUNG '+(T.seg+1)+'/'+ELECTION_SEGMENTS.length, W*0.96, H*0.965);
   billboardTexture.needsUpdate = true;
 }
 
+// ── Room decor: the whole room becomes election night ──
+// Everything here is built once at scene init and kept invisible (zero draw
+// cost) until the mode is on. No lights are added — a changing light count
+// would recompile every material's shader — the existing ceiling lights and
+// the alarm beacon are re-coloured instead, and the "searchlights" are
+// additive cones. All motion is slow and smooth (no strobe, as everywhere in
+// this room).
+const electionDecor = { group:null, fin:null, beams:[], fades:[], balloons:null, confetti:null };
+const BALLOON_N = 42, CONFETTI_N = 300, ELEC_CEIL_Y = WALL_H + CEIL_CLEAR;
+
+function buildElectionDecor() {
+  const D = electionDecor, g = new THREE.Group();
+  g.visible = false; scene.add(g); D.group = g;
+  const fadeMat = (m) => { m.transparent = true; m.opacity = 0; D.fades.push({m, max:m.userData.max ?? 1}); return m; };
+  const flat = (hex, max=1) => { const m = new THREE.MeshBasicMaterial({color:hex, side:THREE.DoubleSide}); m.userData.max = max; return fadeMat(m); };
+  const meshOf = (arr, material) => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+    const m = new THREE.Mesh(geo, material); m.frustumCulled = false; g.add(m);
+  };
+
+  // pennant bunting under the top edge of every wall (parts of walls that carry
+  // the hidden passage or the map screen get no sag so nothing is crossed)
+  const bunting = [[], [], []];
+  octWallDefs().forEach(w => {
+    const nx = Math.sin(w.ry), nz = Math.cos(w.ry), tx = Math.cos(w.ry), tz = -Math.sin(w.ry);
+    const L = w.width - 0.3, n = Math.round(L/0.2), half = L/n*0.44, ph = 0.15;
+    const sag = w.index === 0 ? 0 : 0.06;
+    for (let i = 0; i < n; i++) {
+      const u = (i + 0.5)/n, s = (u - 0.5)*L;
+      if (w.index === 2 && Math.abs(s) < SECRET_CORR_W/2 + 0.15) continue; // keep the secret passage clear
+      const yTop = WALL_H - 0.04 - sag*4*u*(1 - u);
+      const cx = w.mid[0] + tx*s + nx*0.06, cz = w.mid[1] + tz*s + nz*0.06;
+      bunting[i % 3].push(cx - tx*half, yTop, cz - tz*half,  cx + tx*half, yTop, cz + tz*half,  cx, yTop - ph, cz);
+    }
+  });
+  [0xb8283a, 0xd9dcea, 0x2848c0].forEach((c, k) => meshOf(bunting[k], flat(c)));
+
+  // gold stars above the portraits and the billboard
+  const stars = [];
+  const addStar = (w, s, y, R) => {
+    const nx = Math.sin(w.ry), nz = Math.cos(w.ry), tx = Math.cos(w.ry), tz = -Math.sin(w.ry);
+    const P = (a, r) => [w.mid[0] + tx*(s + Math.cos(a)*r) + nx*0.06, y + Math.sin(a)*r, w.mid[1] + tz*(s + Math.cos(a)*r) + nz*0.06];
+    for (let j = 0; j < 10; j++) {
+      const a0 = Math.PI/2 + j*Math.PI/5, a1 = a0 + Math.PI/5;
+      stars.push(...P(0, 0), ...P(a0, j % 2 ? R*0.42 : R), ...P(a1, (j+1) % 2 ? R*0.42 : R));
+    }
+  };
+  const walls = octWallDefs();
+  [1, 3, 5, 7].forEach(i => [-0.55, 0, 0.55].forEach(s => addStar(walls[i], s, 2.72, 0.11)));
+  [-2, -1, 0, 1, 2].forEach(s => addStar(walls[4], s, 2.62, 0.13));
+  meshOf(stars, flat(0xffd36b));
+
+  // searchlight beams from the four ceiling corners, sweeping across the room
+  [0xff3040, 0xffffff, 0x3a6aff, 0xffffff].forEach((hex, k) => {
+    const BH = 3.9, cx = k < 2 ? 2.4 : -2.4, cz = k % 2 ? 2.4 : -2.4;
+    const geo = new THREE.ConeGeometry(0.6, BH, 20, 1, true); geo.translate(0, -BH/2, 0); // apex at the origin, opening downward
+    const p = geo.attributes.position, col = new Float32Array(p.count*3);
+    for (let i = 0; i < p.count; i++) { const v = 1 - 0.88*Math.min(1, Math.max(0, -p.getY(i)/BH)); col.set([v, v, v], i*3); } // bright at the lamp, fading out
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const m = new THREE.MeshBasicMaterial({color:hex, vertexColors:true, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide});
+    m.userData.max = 0.2; fadeMat(m);
+    const tilt = new THREE.Group(); tilt.add(new THREE.Mesh(geo, m));
+    const yaw = new THREE.Group(); yaw.position.set(cx, ELEC_CEIL_Y - 0.05, cz); yaw.add(tilt); g.add(yaw);
+    D.beams.push({yaw, tilt, base:Math.atan2(cz, -cx), k}); // local +x of `yaw` points at the room's centre at rotation base
+  });
+
+  // red / white / blue floor seal around the table and the seats
+  [[0, 0xff2038], [0.15, 0xf2f4ff], [0.3, 0x2f62ff]].forEach(([off, hex]) => {
+    const r0 = TABLE_R + 1.25 + off;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(r0, r0 + 0.09, 72), flat(hex, 0.75));
+    ring.rotation.x = -Math.PI/2; ring.position.y = 0.014; g.add(ring);
+  });
+
+  // victory finale: balloon drop + confetti (own group, shown only while electionFx.on)
+  const fin = new THREE.Group(); fin.visible = false; scene.add(fin); D.fin = fin;
+  const balloons = new THREE.InstancedMesh(new THREE.SphereGeometry(0.17, 12, 10),
+    new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.28, metalness:0.05, emissive:0x161616, emissiveIntensity:1}), BALLOON_N);
+  balloons.instanceMatrix.setUsage(THREE.DynamicDrawUsage); balloons.frustumCulled = false;
+  const bc = [0xd42a3f, 0xf2f4ff, 0x2b55d9];
+  for (let i = 0; i < BALLOON_N; i++) balloons.setColorAt(i, new THREE.Color(bc[i % 3]));
+  fin.add(balloons); D.balloons = balloons;
+  const cpos = new Float32Array(CONFETTI_N*3), ccol = new Float32Array(CONFETTI_N*3), cc = [0xff3040, 0xffffff, 0x4d7bff, 0xffd36b];
+  for (let i = 0; i < CONFETTI_N; i++) new THREE.Color(cc[i % 4]).toArray(ccol, i*3);
+  const cgeo = new THREE.BufferGeometry();
+  cgeo.setAttribute('position', new THREE.BufferAttribute(cpos, 3)); cgeo.setAttribute('color', new THREE.BufferAttribute(ccol, 3));
+  const confetti = new THREE.Points(cgeo, new THREE.PointsMaterial({size:0.055, vertexColors:true, transparent:true, opacity:0.95, depthWrite:false}));
+  confetti.frustumCulled = false; fin.add(confetti); D.confetti = confetti;
+  electionFinaleSeed();
+
+  // compile every new shader now (briefly visible) so switching the mode on never hitches
+  g.visible = true; fin.visible = true;
+  try { renderer.compile(scene, camera); } catch(e) {}
+  g.visible = false; fin.visible = false;
+}
+
+// Per-balloon / per-confetti random constants — fresh each time the finale starts.
+const finaleRand = { b:[], c:[] };
+function electionFinaleSeed() {
+  finaleRand.b = Array.from({length:BALLOON_N}, () => {
+    const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*3.0;
+    return { x:Math.cos(a)*r, z:Math.sin(a)*r, v:0.42 + Math.random()*0.35, d:Math.random()*5, ph:Math.random()*6.28 };
+  });
+  finaleRand.c = Array.from({length:CONFETTI_N}, () => {
+    const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*3.3;
+    return { x:Math.cos(a)*r, z:Math.sin(a)*r, v:0.45 + Math.random()*0.7, d:Math.random()*4, ph:Math.random()*6.28 };
+  });
+}
+
+let electionBlend = 0, electionThemeDirty = false, electionFxWasOn = false;
+const _bd = new THREE.Object3D();
+function updateElectionFinale(dt) {
+  const D = electionDecor;
+  if (!D.fin) return;
+  if (electionFx.on !== electionFxWasOn) { electionFxWasOn = electionFx.on; if (electionFx.on) electionFinaleSeed(); }
+  D.fin.visible = electionFx.on;
+  if (!electionFx.on) return;
+  const t = (performance.now() - electionFx.t0)/1000;
+  const TY = 0.78; // table height; things landing on it stop there, everything else on the floor
+  finaleRand.b.forEach((o, i) => {
+    const el = t - o.d;
+    if (el < 0) { _bd.scale.setScalar(0.0001); _bd.position.set(o.x, ELEC_CEIL_Y, o.z); }
+    else {
+      const onTable = Math.hypot(o.x, o.z) < TABLE_R, rest = (onTable ? TY + 0.05 : 0) + 0.2;
+      const y = Math.max(rest, ELEC_CEIL_Y - 0.15 - o.v*el), falling = y > rest;
+      _bd.scale.set(1, 1.18, 1);
+      _bd.position.set(o.x + Math.sin(t*0.9 + o.ph)*(falling ? 0.22 : 0.03), y, o.z + Math.cos(t*0.7 + o.ph)*(falling ? 0.18 : 0.03));
+    }
+    _bd.updateMatrix(); D.balloons.setMatrixAt(i, _bd.matrix);
+  });
+  D.balloons.instanceMatrix.needsUpdate = true;
+  const pos = D.confetti.geometry.attributes.position.array;
+  finaleRand.c.forEach((o, i) => {
+    const el = t - o.d;
+    if (el < 0) { pos[i*3] = o.x; pos[i*3+1] = -10; pos[i*3+2] = o.z; return; } // not released yet
+    const onTable = Math.hypot(o.x, o.z) < TABLE_R, rest = (onTable ? TY + 0.06 : 0.012);
+    const y = Math.max(rest, ELEC_CEIL_Y - 0.1 - o.v*el), falling = y > rest;
+    pos[i*3] = o.x + (falling ? Math.sin(t*3 + o.ph)*0.15 : 0);
+    pos[i*3+1] = y;
+    pos[i*3+2] = o.z + (falling ? Math.cos(t*2.3 + o.ph)*0.15 : 0);
+  });
+  D.confetti.geometry.attributes.position.needsUpdate = true;
+}
+
+// Fades the party in/out and applies it. Runs after updateAlarmAmbiance, which
+// re-blends the light colours from scratch every frame — so tinting them here
+// (weighted by how calm the alarm level is) needs no stored base colours, and
+// a red alert still overrides the party.
+function updateElectionTheme(dt) {
+  const target = election.active ? 1 : 0;
+  electionBlend += (target - electionBlend)*Math.min(1, dt/0.8);
+  if (Math.abs(target - electionBlend) < 0.002) electionBlend = target;
+  const b = electionBlend, D = electionDecor;
+  if (b === 0 && !electionThemeDirty) return;
+  const w = b*(1 - alarmLevelDisplayed/3);
+
+  // neon trim: every captured material chases red -> white -> blue around the room
+  themedMats.forEach(o => {
+    usColor(o.ph + _t*0.15, _usTmp); if (o.dim) _usTmp.multiplyScalar(0.55);
+    o.m.emissive.copy(o.emissive).lerp(_usTmp, b);
+    if (o.both) o.m.color.copy(o.color).lerp(_usTmp, b);
+  });
+
+  // lights: navy fill, red / blue ceiling pools, the beacon sweeps in party colours
+  // (the colours are dimmed: the room is a dark club with coloured pools of light, never washed out)
+  if (ambientLight) ambientLight.color.lerp(US_AMBIENT, 0.8*w);
+  if (ceilingLightA) { usColor(_t*0.15, _usTmp).multiplyScalar(0.7);       ceilingLightA.color.lerp(_usTmp, w); ceilingLightA.intensity += 0.2*w; }
+  if (ceilingLightB) { usColor(_t*0.15 + 0.5, _usTmp).multiplyScalar(0.7); ceilingLightB.color.lerp(_usTmp, w); ceilingLightB.intensity += 0.2*w; }
+  if (armoryLight)   { usColor(_t*0.15 + 0.25, _usTmp).multiplyScalar(0.7); armoryLight.color.lerp(_usTmp, w); }
+  if (alarmBeaconGroup && alarmBeaconLight && alarmBeaconMesh) {
+    if (alarmLevelDisplayed <= 2) { // alarm's own beacon is idle: lend it to the party
+      alarmBeaconGroup.rotation.y += dt*0.6*b;
+      usColor(_t*0.15 + 0.17, _usTmp);
+      alarmBeaconLight.color.copy(_usTmp); alarmBeaconLight.intensity = b*(0.6 + 0.1*Math.sin(_t*1.1));
+      alarmBeaconMesh.material.emissive.copy(_usTmp); alarmBeaconMesh.material.emissiveIntensity = b*1.6;
+    } else { alarmBeaconLight.color.setHex(0xff2200); alarmBeaconMesh.material.emissive.setHex(0xff2200); }
+  }
+
+  // props
+  if (D.group) {
+    D.group.visible = b > 0.002;
+    D.fades.forEach(f => { f.m.opacity = f.max*b; });
+    D.beams.forEach(o => {
+      o.yaw.rotation.y = o.base + 0.55*Math.sin(_t*0.33 + o.k*1.7);
+      o.tilt.rotation.z = 0.5 + 0.14*Math.sin(_t*0.47 + o.k*2.1);
+    });
+  }
+  electionThemeDirty = b > 0;
+  if (b === 0 && alarmBeaconLight) { // fully off again: hand the beacon back to the alarm system
+    alarmBeaconLight.color.setHex(0xff2200); alarmBeaconMesh.material.emissive.setHex(0xff2200);
+  }
+}
+const US_AMBIENT = new THREE.Color(0x141c44);
+
 // ── GM controls ──
 function electionUI() {
   const el = id => document.getElementById(id);
-  el('elec-toggle').textContent = election.active ? '⏹ Wahl-Screen beenden' : '▶ Wahl-Screen starten';
+  el('elec-toggle').textContent = election.active ? '⏹ Wahlabend beenden' : '▶ Wahlabend starten';
   [...el('elec-segs').children].forEach((b, i) => b.classList.toggle('on', election.active && i === election.seg));
   const fmt = v => v.toFixed(1).replace('.', ',');
   el('elec-status').textContent = !election.active ? 'Aus — die Plakatwand zeigt wieder Werbung'
@@ -3128,7 +3426,8 @@ function electionSetupUI() {
     b.addEventListener('click', () => electionGoSeg(i));
     el('elec-segs').appendChild(b);
   });
-  el('elec-toggle').addEventListener('click', () => election.active ? electionGM({active:false}) : electionGM({active:true}));
+  el('elec-toggle').addEventListener('click', () => election.active ? electionGM({active:false, burst:0}) : electionGM({active:true}));
+  el('elec-burst').addEventListener('click', () => electionGM({active:true, burst:election.burst+1}));
   el('elec-set').addEventListener('click', () => {
     const fe = parseFloat(String(el('elec-ferro').value).replace(',', '.'));
     const co = parseFloat(String(el('elec-counted').value).replace(',', '.'));
@@ -3241,6 +3540,7 @@ function buildTable() {
   const panel=new THREE.Mesh(new THREE.BoxGeometry(0.02,0.34,TW*0.7),
     new THREE.MeshStandardMaterial({color:CYAN,emissive:CYAN,emissiveIntensity:0.5,transparent:true,opacity:0.28,roughness:0.3,metalness:0.1}));
   panel.position.set(0,0.17,0); screenGrp.add(panel);
+  if (themeCapture) themeReg(panel.material, CYAN, CYAN);
   const panelEdge=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.02,TW*0.7+0.02),mat(CYAN,CYAN,1.4));
   panelEdge.position.set(0,0.34,0); screenGrp.add(panelEdge);
   // GM's seat sits due -X (dir [-1,0], the first seat in the loop below), so
@@ -4344,6 +4644,8 @@ function animate() {
   if(ceilingLightB) ceilingLightB.intensity = 0.5 + Math.sin(_t*0.4+2)*0.05;
 
   updateAlarmAmbiance(dt);
+  updateElectionTheme(dt);   // after the alarm blend: red alert still wins over the party
+  updateElectionFinale(dt);
   updateBillboard(dt);
   updateNewsTicker(dt);
   updateAdOverlay();
