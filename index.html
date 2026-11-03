@@ -153,6 +153,7 @@ body.locked #crosshair{opacity:1}
 .elec-row{display:flex;gap:6px}
 .radio-opt{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:1px;color:rgba(217,138,61,.7);text-transform:uppercase;margin:4px 0;cursor:pointer}
 .radio-opt input[type=range]{flex:1}
+.tabvol input[type=range]{accent-color:#d98a3d}
 /* Players: shown while the GM plays a Funk message */
 #radio-badge{position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:200;padding:6px 16px;font-size:11px;letter-spacing:3px;color:var(--amb);background:rgba(20,13,6,.9);border:1px solid rgba(217,138,61,.5);pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap}
 #radio-badge.show{opacity:1}
@@ -482,10 +483,12 @@ canvas{display:block}
   </div>
   <div class="gm-sec">
     <div class="gstt">Musik an alle senden</div>
-    <button class="pb" id="share-btn">🔊 Tab-Audio streamen (Kanal 1)</button>
+    <button class="pb" id="share-btn">🔊 Tab-Audio streamen (Tab 1)</button>
     <div class="mstat" id="mstat">Inaktiv — Tab im Browser auswählen</div>
-    <button class="pb" id="share2-btn">🎶 Zweiten Tab streamen (Kanal 2)</button>
-    <div class="mstat" id="mstat2">Inaktiv — z. B. Tabletopaudio auf 1, Spotify auf 2. Beide laufen gleichzeitig, Spieler regeln jeden Kanal einzeln.</div>
+    <label class="radio-opt tabvol">Pegel <input type="range" id="tab1-vol" min="0" max="150" value="100"/></label>
+    <button class="pb" id="share2-btn">🎶 Zweiten Tab streamen (Tab 2)</button>
+    <div class="mstat" id="mstat2">Inaktiv — z. B. Tabletopaudio auf 1, Spotify auf 2. Beide werden gemischt und als ein Stream gesendet.</div>
+    <label class="radio-opt tabvol">Pegel <input type="range" id="tab2-vol" min="0" max="150" value="100"/></label>
   </div>
   <div class="gm-sec">
     <div class="gstt">Taktische Karte</div>
@@ -886,19 +889,19 @@ const MUSIC_UID_OFFSET = 1000000;
 // (own volume slider, music ducks while it plays). Any uid >= this is Funk;
 // any uid in [MUSIC_UID_OFFSET, RADIO_UID_OFFSET) is music.
 const RADIO_UID_OFFSET = 2000000;
-// A second, independent tab-audio channel (e.g. Tabletopaudio on channel 1 for
-// ambience, Spotify on channel 2 for music — one browser tab can only be
-// captured per stream). Same mechanism as the first music channel, own uid
-// range so receivers can give it its own volume. Ranges are 1M apart and real
-// player uids stay below 1M: music [1M,2M), Funk [2M,3M), channel 2 [3M,4M).
+// RETIRED: a second tab-audio channel on its own uid. Players only ever heard
+// the first one, so both tabs are now mixed by the GM into the single music
+// stream (see tabMix). The receiving branch for this range is kept only so a
+// stale GM page can't break anything. Ranges are 1M apart and real player uids
+// stay below 1M: music [1M,2M), Funk [2M,3M), (retired) channel 2 [3M,4M).
 const MUSIC2_UID_OFFSET = 3000000;
-let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
+let agoraClient = null, musicClient = null, localAudio = null, localVideo = null;
 let gatedMicTrack = null; // the custom Agora track actually published for voice — see buildGatedMicTrack()
 let localPublishReady = false; // set once the very first publish after joining has finished — until then the join flow owns publishing, not the "start mic/camera later" buttons
 let localUID = null, localName = '', isDM = false;
 let linkedCharId = null; // player's chosen campaign/characters/{id} for ad-skip billing — null if unset (DM never has one, see the join handler)
 let joinedAppId = null, joinedRoom = null, joinedToken = null;
-let micMuted = false, camOff = false, streaming = false;
+let micMuted = false, camOff = false;
 let forceMuted = false, preForceMuteState = false; // players: muted by the GM, cannot self-unmute
 let allMuted = false; // GM: current broadcast mute-all state
 const users = {};
@@ -5126,80 +5129,171 @@ function sendName(name,asDM){
 }
 
 // ══════════ MUSIC STREAM ══════════
-async function toggleStream(){
-  const stat=document.getElementById('mstat');
-  const mbtn=document.getElementById('btn-music');
-  if(streaming){
-    try{
-      if(screenAudio && musicClient){await musicClient.unpublish(screenAudio);}
-      if(screenAudio){screenAudio.stop();screenAudio.close();screenAudio=null;}
-      if(musicClient){await musicClient.leave();musicClient=null;}
-    }catch(e){ console.warn('stopping music stream failed:', e); }
-    streaming=false;
-    document.getElementById('share-btn').textContent='🔊 Tab-Audio streamen';
-    stat.textContent='Inaktiv'; stat.className='mstat';
-    mbtn.classList.remove('str'); mbtn.querySelector('span').textContent='Musik';
-    return;
+// Two tab shares (Tab 1 / Tab 2 — e.g. Tabletopaudio for ambience, Spotify for
+// music) are captured here, MIXED in the GM's browser, and published as ONE
+// stream on the single music uid (MUSIC_UID_OFFSET). The earlier design
+// published the second tab from a second Agora client on its own uid
+// (MUSIC2_UID_OFFSET) and players only ever heard the first; one stream on the
+// uid that is known to work for everyone can't have that problem. It also gives
+// the GM a level per tab. Players are unchanged — they receive one music
+// stream, through the same path as always. Like the Funk player, the mixer has
+// its own audio context with a large buffer: smoothness beats latency here.
+const TAB_MIX_IDLE_LEAVE_MS = 15000; // after the last tab stops, the music client leaves this much later (quick swaps don't rejoin)
+const TAB_GAIN_KEY = 'faradayRoomTabMixGain';
+const TAB_SLOT_UI = {
+  1: { btn:'share-btn',  stat:'mstat',  vol:'tab1-vol', name:'Tab 1', idle:'🔊 Tab-Audio streamen (Tab 1)', idleStat:'Inaktiv — Tab im Browser auswählen' },
+  2: { btn:'share2-btn', stat:'mstat2', vol:'tab2-vol', name:'Tab 2', idle:'🎶 Zweiten Tab streamen (Tab 2)', idleStat:'Inaktiv — z. B. Tabletopaudio auf 1, Spotify auf 2. Beide werden gemischt und als ein Stream gesendet.' },
+};
+const tabMix = { ac:null, limiter:null, dest:null, client:null, track:null, joining:null, leaveTimer:null, meterTimer:null,
+  slots:{1:null, 2:null}, starting:{1:false, 2:false}, gain:{1:1, 2:1} };
+try { const g = JSON.parse(localStorage.getItem(TAB_GAIN_KEY)); if (g) { [1,2].forEach(n => { if (Number.isFinite(g[n])) tabMix.gain[n] = Math.min(1.5, Math.max(0, g[n])); }); } } catch(e) {}
+const tabEl = id => document.getElementById(id);
+
+function tabMixBuild() {
+  if (tabMix.ac) return;
+  try { tabMix.ac = new (window.AudioContext||window.webkitAudioContext)({latencyHint:0.2, sampleRate:48000}); }
+  catch(e) { tabMix.ac = new (window.AudioContext||window.webkitAudioContext)({latencyHint:'playback'}); }
+  const ac = tabMix.ac;
+  ac.addEventListener('statechange', () => { if (ac.state==='suspended' || ac.state==='interrupted') ac.resume().catch(()=>{}); });
+  if (ac.state==='suspended') ac.resume().catch(()=>{});
+  // Soft limiter: exactly transparent up to 0.8 of full scale, then rounds the
+  // peaks off towards 1.0 — so two loud tabs summed can't clip the published
+  // stream, while a single tab at normal level passes through untouched.
+  tabMix.limiter = ac.createWaveShaper();
+  const curve = new Float32Array(4097);
+  for (let i = 0; i < curve.length; i++) {
+    const x = i/(curve.length-1)*2 - 1, a = Math.abs(x);
+    curve[i] = Math.sign(x)*(a <= 0.8 ? a : 0.8 + 0.2*Math.tanh((a - 0.8)/0.2));
   }
-  try{
-    stat.textContent='Browser-Tab auswählen…';
-    const tracks=await AgoraRTC.createScreenVideoTrack({encoderConfig:'1080p_1'},'enable');
-    const [sv,sa]=Array.isArray(tracks)?tracks:[tracks,null];
-    sv.stop(); sv.close();
-    if(!sa){stat.textContent='Kein Tab-Audio — "Tab-Ton teilen" im Dialog aktivieren';return;}
-    screenAudio=sa;
-    musicClient=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
-    await musicClient.join(joinedAppId, joinedRoom, joinedToken, localUID + MUSIC_UID_OFFSET);
-    await musicClient.publish(sa);
-    streaming=true;
-    document.getElementById('share-btn').textContent='⏹ Stoppen';
-    stat.textContent='▶ Musik streamt für alle'; stat.className='mstat on';
-    mbtn.classList.add('str'); mbtn.querySelector('span').textContent='Musik läuft';
-  }catch(e){
-    stat.textContent='Fehler: '+e.message;
-    try{ if(musicClient) await musicClient.leave(); }catch(_){}
-    musicClient=null; screenAudio=null; streaming=false;
-  }
+  tabMix.limiter.curve = curve; tabMix.limiter.oversample = '2x';
 }
 
-// Channel 2 — a second, independent tab stream next to the first, so e.g.
-// Tabletopaudio (ambience) and Spotify (music) can run at the same time: one
-// browser tab can only be captured per stream. Deliberately a separate copy of
-// toggleStream() with its own state, so channel 1 behaves exactly as before.
-let streaming2 = false, screenAudio2 = null, musicClient2 = null;
-async function toggleStream2(){
-  const stat=document.getElementById('mstat2');
-  const btn=document.getElementById('share2-btn');
-  if(streaming2){
-    try{
-      if(screenAudio2 && musicClient2){await musicClient2.unpublish(screenAudio2);}
-      if(screenAudio2){screenAudio2.stop();screenAudio2.close();screenAudio2=null;}
-      if(musicClient2){await musicClient2.leave();musicClient2=null;}
-    }catch(e){ console.warn('stopping music stream 2 failed:', e); }
-    streaming2=false;
-    btn.textContent='🎶 Zweiten Tab streamen (Kanal 2)';
-    stat.textContent='Inaktiv'; stat.className='mstat';
-    return;
-  }
-  try{
-    stat.textContent='Browser-Tab auswählen… (einen anderen als bei Kanal 1)';
-    const tracks=await AgoraRTC.createScreenVideoTrack({encoderConfig:'1080p_1'},'enable');
-    const [sv,sa]=Array.isArray(tracks)?tracks:[tracks,null];
-    sv.stop(); sv.close();
-    if(!sa){stat.textContent='Kein Tab-Audio — "Tab-Ton teilen" im Dialog aktivieren';return;}
-    screenAudio2=sa;
-    musicClient2=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
-    await musicClient2.join(joinedAppId, joinedRoom, joinedToken, localUID + MUSIC2_UID_OFFSET);
-    await musicClient2.publish(sa);
-    streaming2=true;
-    btn.textContent='⏹ Kanal 2 stoppen';
-    stat.textContent='▶ Kanal 2 streamt für alle'; stat.className='mstat on';
-  }catch(e){
-    stat.textContent='Fehler: '+e.message;
-    try{ if(musicClient2) await musicClient2.leave(); }catch(_){}
-    musicClient2=null; screenAudio2=null; streaming2=false;
+async function tabMixEnsureLive() {
+  clearTimeout(tabMix.leaveTimer);
+  if (tabMix.client && tabMix.track) return;
+  if (tabMix.joining) return tabMix.joining;
+  if (!joinedAppId || !joinedRoom) throw new Error('Nicht mit dem Raum verbunden');
+  tabMix.joining = (async () => {
+    tabMixBuild();
+    // a fresh destination per session: closing the published track ends its source track for good
+    tabMix.dest = tabMix.ac.createMediaStreamDestination();
+    tabMix.limiter.connect(tabMix.dest);
+    tabMix.client = musicClient = AgoraRTC.createClient({mode:'rtc', codec:'vp8'});
+    await withTimeout(tabMix.client.join(joinedAppId, joinedRoom, joinedToken, localUID + MUSIC_UID_OFFSET), 15000, 'Musik-Kanal');
+    tabMix.track = await AgoraRTC.createCustomAudioTrack({mediaStreamTrack: tabMix.dest.stream.getAudioTracks()[0], encoderConfig:'high_quality_stereo'});
+    await tabMix.client.publish(tabMix.track);
+  })();
+  try { await tabMix.joining; }
+  catch(e) { await tabMixLeave(); throw e; }
+  finally { tabMix.joining = null; }
+}
+async function tabMixLeave() {
+  clearTimeout(tabMix.leaveTimer);
+  const t = tabMix.track, c = tabMix.client, d = tabMix.dest;
+  tabMix.track = null; tabMix.client = null; tabMix.dest = null; musicClient = null;
+  try { if (d && tabMix.limiter) tabMix.limiter.disconnect(d); } catch(_) {}
+  try { if (t) { t.stop(); t.close(); } } catch(_) {}
+  try { if (c) await c.leave(); } catch(_) {}
+}
+
+function tabMixRenderBtn() {
+  const mbtn = tabEl('btn-music'), any = !!(tabMix.slots[1] || tabMix.slots[2]);
+  [1, 2].forEach(n => {
+    const ui = TAB_SLOT_UI[n], on = !!tabMix.slots[n];
+    tabEl(ui.btn).textContent = on ? '⏹ ' + ui.name + ' stoppen' : ui.idle;
+    if (!on) { const st = tabEl(ui.stat); st.className = 'mstat'; if (!tabMix.starting[n]) st.textContent = ui.idleStat; }
+  });
+  if (mbtn) { mbtn.classList.toggle('str', any); mbtn.querySelector('span').textContent = any ? 'Musik läuft' : 'Musik'; }
+}
+
+// Level readout per tab (and a heads-up when a shared tab delivers no sound at
+// all — a paused player is silent for good reasons, a dead capture is not).
+function tabMixMeter() {
+  [1, 2].forEach(n => {
+    const s = tabMix.slots[n]; if (!s) return;
+    const d = new Uint8Array(s.an.fftSize); s.an.getByteTimeDomainData(d);
+    let peak = 0; for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i] - 128));
+    const lvl = peak/128, db = 20*Math.log10(Math.max(lvl, 1e-4));
+    s.silent = lvl < 0.004 ? s.silent + 1 : 0;
+    const bars = Math.max(0, Math.min(5, Math.round((db + 50)/10)));
+    const st = tabEl(TAB_SLOT_UI[n].stat);
+    if (!tabMix.track) { st.textContent = 'Verbinde …'; st.className = 'mstat'; }
+    else if (s.silent > 20) { st.textContent = '⚠ ' + TAB_SLOT_UI[n].name + ': gerade kein Ton (Pause?)'; st.className = 'mstat'; }
+    else { st.textContent = '▶ ' + TAB_SLOT_UI[n].name + ' für alle  ' + '▮'.repeat(bars) + '▯'.repeat(5 - bars); st.className = 'mstat on'; }
+  });
+}
+function tabMixMeterSync() {
+  const any = !!(tabMix.slots[1] || tabMix.slots[2]);
+  if (any && !tabMix.meterTimer) tabMix.meterTimer = setInterval(tabMixMeter, 300);
+  if (!any && tabMix.meterTimer) { clearInterval(tabMix.meterTimer); tabMix.meterTimer = null; }
+}
+
+async function tabMixStop(n, note) {
+  const s = tabMix.slots[n]; if (!s) return;
+  tabMix.slots[n] = null;
+  try { s.mt.removeEventListener('ended', s.onEnded); } catch(_) {}
+  try { s.src.disconnect(); s.gain.disconnect(); } catch(_) {}
+  try { s.sa.stop(); s.sa.close(); } catch(_) {}
+  tabMixMeterSync(); tabMixRenderBtn();
+  if (note) tabEl(TAB_SLOT_UI[n].stat).textContent = note;
+  if (!tabMix.slots[1] && !tabMix.slots[2]) {
+    clearTimeout(tabMix.leaveTimer);
+    tabMix.leaveTimer = setTimeout(() => { if (!tabMix.slots[1] && !tabMix.slots[2]) tabMixLeave(); }, TAB_MIX_IDLE_LEAVE_MS);
   }
 }
+async function tabMixShutdown() { // leaving the room
+  for (const n of [1, 2]) await tabMixStop(n);
+  await tabMixLeave();
+}
+
+async function tabMixToggle(n) {
+  if (tabMix.slots[n]) { await tabMixStop(n); return; }
+  if (tabMix.starting[n]) return;
+  tabMix.starting[n] = true;
+  const ui = TAB_SLOT_UI[n], stat = tabEl(ui.stat);
+  let sa = null, stored = false;
+  try {
+    tabMixBuild(); // inside the click, while the browser still counts it as a user gesture
+    stat.textContent = 'Browser-Tab auswählen…' + (n === 2 ? ' (einen anderen als bei Tab 1)' : ''); stat.className = 'mstat';
+    const tracks = await AgoraRTC.createScreenVideoTrack({encoderConfig:'1080p_1'}, 'enable');
+    const [sv, a] = Array.isArray(tracks) ? tracks : [tracks, null];
+    sv.stop(); sv.close();
+    sa = a;
+    if (!sa) { stat.textContent = 'Kein Tab-Audio — "Tab-Ton teilen" im Dialog aktivieren'; return; }
+    stat.textContent = 'Verbinde …';
+    await tabMixEnsureLive();
+    const ac = tabMix.ac, mt = sa.getMediaStreamTrack();
+    const src = ac.createMediaStreamSource(new MediaStream([mt]));
+    const gain = ac.createGain(); gain.gain.value = tabMix.gain[n];
+    const an = ac.createAnalyser(); an.fftSize = 512;
+    src.connect(gain); gain.connect(tabMix.limiter); src.connect(an);
+    const slot = { sa, mt, src, gain, an, silent:0, onEnded: () => tabMixStop(n, 'Tab-Freigabe wurde im Browser beendet') };
+    mt.addEventListener('ended', slot.onEnded); // "Freigabe beenden" in the browser bar
+    tabMix.slots[n] = slot; stored = true;
+    clearTimeout(tabMix.leaveTimer);
+    tabMixMeterSync(); tabMixRenderBtn(); tabMixMeter();
+  } catch(e) {
+    stat.textContent = 'Fehler: ' + e.message; stat.className = 'mstat';
+    if (sa && !stored) { try { sa.stop(); sa.close(); } catch(_) {} }
+    if (!tabMix.slots[1] && !tabMix.slots[2]) tabMixLeave();
+  } finally {
+    tabMix.starting[n] = false;
+    tabMixRenderBtn();
+  }
+}
+const toggleStream = () => tabMixToggle(1);
+const toggleStream2 = () => tabMixToggle(2);
+
+// per-tab level sliders (GM): balance ambience against music — saved, applied live
+[1, 2].forEach(n => {
+  const sl = tabEl(TAB_SLOT_UI[n].vol); if (!sl) return;
+  sl.value = String(Math.round(tabMix.gain[n]*100));
+  sl.addEventListener('input', () => {
+    tabMix.gain[n] = sl.value/100;
+    const s = tabMix.slots[n]; if (s) s.gain.gain.setTargetAtTime(tabMix.gain[n], tabMix.ac.currentTime, 0.05);
+    try { localStorage.setItem(TAB_GAIN_KEY, JSON.stringify(tabMix.gain)); } catch(e) {}
+  });
+});
 
 // ══════════ AD SYSTEM ══════════
 // The interruptive half of the ad feature — character linking, the
@@ -6308,7 +6402,7 @@ function renderVolPanel() {
   musicLabel.className = 'vol-label';
   const musicPct = Math.round(musicVolume * 100);
   const musicNameSpan = document.createElement('span');
-  musicNameSpan.textContent = '🎵 Musik · Kanal 1';
+  musicNameSpan.textContent = '🎵 Musik';
   const musicPctSpan = document.createElement('span');
   musicPctSpan.textContent = musicPct + '%';
   musicLabel.appendChild(musicNameSpan); musicLabel.appendChild(musicPctSpan);
@@ -6322,28 +6416,6 @@ function renderVolPanel() {
   });
   musicRow.appendChild(musicLabel); musicRow.appendChild(musicSlider);
   list.appendChild(musicRow);
-
-  // Channel 2 (the GM's second tab stream) — own volume, same layering.
-  const music2Row = document.createElement('div');
-  music2Row.className = 'vol-row';
-  const music2Label = document.createElement('div');
-  music2Label.className = 'vol-label';
-  const music2Pct = Math.round(music2Volume * 100);
-  const music2NameSpan = document.createElement('span');
-  music2NameSpan.textContent = '🎶 Musik · Kanal 2';
-  const music2PctSpan = document.createElement('span');
-  music2PctSpan.textContent = music2Pct + '%';
-  music2Label.appendChild(music2NameSpan); music2Label.appendChild(music2PctSpan);
-  const music2Slider = document.createElement('input');
-  music2Slider.type='range'; music2Slider.min='0'; music2Slider.max='200'; music2Slider.value=String(music2Pct);
-  music2Slider.addEventListener('input', ()=>{
-    music2Volume = music2Slider.value/100;
-    music2PctSpan.textContent = music2Slider.value + '%';
-    if (music2VolumeGain) music2VolumeGain.gain.value = music2Volume;
-    try{ localStorage.setItem(MUSIC2_VOLUME_KEY, String(music2Volume)); }catch(e){}
-  });
-  music2Row.appendChild(music2Label); music2Row.appendChild(music2Slider);
-  list.appendChild(music2Row);
 
   // Personal Funk volume (the GM's audio-file messages) — players only, the
   // GM never receives their own stream. Like the music row: local, saved.
@@ -6601,10 +6673,7 @@ document.getElementById('btn-leave').addEventListener('click',async()=>{
     if(gatedMicTrack){gatedMicTrack.stop();gatedMicTrack.close();}
     if(localAudio){localAudio.stop();localAudio.close();}
     if(localVideo){localVideo.stop();localVideo.close();}
-    if(screenAudio){screenAudio.stop();screenAudio.close();}
-    if(screenAudio2){screenAudio2.stop();screenAudio2.close();}
-    if(musicClient) await musicClient.leave();
-    if(musicClient2) await musicClient2.leave();
+    await tabMixShutdown(); // the GM's mixed tab-audio stream, if it ever ran
     if(agoraClient) await agoraClient.leave();
   }catch(_){}
   location.reload();
