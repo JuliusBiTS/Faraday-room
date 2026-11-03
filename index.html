@@ -680,6 +680,7 @@ let BILLBOARD_ONLY = [
 // of each entry's own (mostly-not-yet-recorded) jingle field. Set this
 // back to null once more per-ad jingles exist, to fall back to entry.jingle.
 const AD_JINGLE_SHARED = 'ads/Look at the Ad.mp3';
+const AD_JINGLE_LEVEL = 0.48; // ad jingle loudness (was 0.8; lowered by 40 %)
 
 // ── Auto-discovery of ads/ ──
 // A static site can't list its own folder, so this asks GitHub's public
@@ -5422,7 +5423,7 @@ function showAdOverlay(adRef) { // adRef: an ads/ image path (broadcast) or a li
     // room, it's just playing.
     const src = audioCtx.createMediaElementSource(audioEl);
     gain = audioCtx.createGain();
-    gain.gain.value = forceMuted ? 0 : 0.8;
+    gain.gain.value = forceMuted ? 0 : AD_JINGLE_LEVEL;
     src.connect(gain); gain.connect(audioCtx.destination);
     audioEl.play().catch(()=>{});
   } catch(e) { console.warn('Werbe-Jingle konnte nicht abgespielt werden:', e); }
@@ -5491,7 +5492,7 @@ function closeAdOverlay() {
 // handler) so the DM's mute-all button silences an in-progress ad too,
 // per the brief.
 function updateAdMuteState() {
-  if (currentAd?.gain) currentAd.gain.gain.setTargetAtTime(forceMuted ? 0 : 0.8, audioCtx?.currentTime||0, 0.05);
+  if (currentAd?.gain) currentAd.gain.gain.setTargetAtTime(forceMuted ? 0 : AD_JINGLE_LEVEL, audioCtx?.currentTime||0, 0.05);
 }
 
 // ── Banner ad — passive, right-edge slide-in, no jingle ──
