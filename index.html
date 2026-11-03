@@ -463,8 +463,10 @@ canvas{display:block}
   </div>
   <div class="gm-sec">
     <div class="gstt">Musik an alle senden</div>
-    <button class="pb" id="share-btn">🔊 Tab-Audio streamen</button>
+    <button class="pb" id="share-btn">🔊 Tab-Audio streamen (Kanal 1)</button>
     <div class="mstat" id="mstat">Inaktiv — Tab im Browser auswählen</div>
+    <button class="pb" id="share2-btn">🎶 Zweiten Tab streamen (Kanal 2)</button>
+    <div class="mstat" id="mstat2">Inaktiv — z. B. Tabletopaudio auf 1, Spotify auf 2. Beide laufen gleichzeitig, Spieler regeln jeden Kanal einzeln.</div>
   </div>
   <div class="gm-sec">
     <div class="gstt">Taktische Karte</div>
@@ -839,6 +841,12 @@ const MUSIC_UID_OFFSET = 1000000;
 // (own volume slider, music ducks while it plays). Any uid >= this is Funk;
 // any uid in [MUSIC_UID_OFFSET, RADIO_UID_OFFSET) is music.
 const RADIO_UID_OFFSET = 2000000;
+// A second, independent tab-audio channel (e.g. Tabletopaudio on channel 1 for
+// ambience, Spotify on channel 2 for music — one browser tab can only be
+// captured per stream). Same mechanism as the first music channel, own uid
+// range so receivers can give it its own volume. Ranges are 1M apart and real
+// player uids stay below 1M: music [1M,2M), Funk [2M,3M), channel 2 [3M,4M).
+const MUSIC2_UID_OFFSET = 3000000;
 let agoraClient = null, musicClient = null, localAudio = null, localVideo = null, screenAudio = null;
 let gatedMicTrack = null; // the custom Agora track actually published for voice — see buildGatedMicTrack()
 let localPublishReady = false; // set once the very first publish after joining has finished — until then the join flow owns publishing, not the "start mic/camera later" buttons
@@ -861,6 +869,11 @@ const MUSIC_VOLUME_KEY = 'faradayRoomMusicVolume';
 let musicVolume = parseFloat(localStorage.getItem(MUSIC_VOLUME_KEY));
 if (isNaN(musicVolume)) musicVolume = 1;
 let musicVolumeGain = null;
+// Channel 2 (second tab stream): same layering, own volume + nodes.
+const MUSIC2_VOLUME_KEY = 'faradayRoomMusic2Volume';
+let music2Volume = parseFloat(localStorage.getItem(MUSIC2_VOLUME_KEY));
+if (isNaN(music2Volume)) music2Volume = 1;
+let music2Gain = null, music2VolumeGain = null, music2Uid = null;
 
 // Funk, receiving side — personal volume (saved), the wired graph, and the
 // GM's "a message is playing" flag, which ducks the ambient music and shows
@@ -3790,13 +3803,37 @@ function wireAmbient(track) {
   }
 }
 
+// Channel 2 (second tab stream) — wired exactly like wireAmbient, own nodes.
+function wireAmbient2(track) {
+  ensureACtx();
+  unwireAmbient2();
+  try {
+    const src = audioCtx.createMediaStreamSource(new MediaStream([track.getMediaStreamTrack()]));
+    const gain = audioCtx.createGain();
+    gain.gain.value = isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85;
+    const volGain = audioCtx.createGain();
+    volGain.gain.value = music2Volume;
+    src.connect(gain); gain.connect(volGain); volGain.connect(audioCtx.destination);
+    music2Gain = gain; music2VolumeGain = volGain;
+  } catch(e) {
+    console.warn('Ambient audio (Kanal 2) fallback:', e);
+    try { track.play(); } catch(_) {}
+  }
+}
+function unwireAmbient2() {
+  if (music2Gain) { try{music2Gain.disconnect();}catch(_){} music2Gain=null; }
+  if (music2VolumeGain) { try{music2VolumeGain.disconnect();}catch(_){} music2VolumeGain=null; }
+}
+
 function updateMusicIsolation() {
-  if (!musicGain || !audioCtx) return;
+  if (!audioCtx) return;
   // While a Funk message plays the ambient music steps back (a plain
   // multiplier on top of the location gate, same layering as the music
-  // volume slider) so the message stays intelligible.
+  // volume slider) so the message stays intelligible. Both channels follow.
   const target = (isInSecretWing(playerPos.x,playerPos.z) ? 0 : 0.85) * (radioPlaying ? RADIO_DUCK : 1);
-  musicGain.gain.setTargetAtTime(target, audioCtx.currentTime, radioPlaying ? 0.25 : 0.6);
+  const tc = radioPlaying ? 0.25 : 0.6;
+  if (musicGain) musicGain.gain.setTargetAtTime(target, audioCtx.currentTime, tc);
+  if (music2Gain) music2Gain.gain.setTargetAtTime(target, audioCtx.currentTime, tc);
 }
 
 // Funk receiving side: the GM's audio files arrive on their own uid (see
@@ -4250,6 +4287,18 @@ async function initAgora(appId, room, myName, asDM, token) {
     }
     const uid=ru.uid;
 
+    // Channel 2 of the GM's shared music (own uid range, see MUSIC2_UID_OFFSET)
+    // — checked first: the Funk and music branches below would claim it.
+    if (uid >= MUSIC2_UID_OFFSET) {
+      if (mediaType==='audio') {
+        ensureACtx();
+        ru.audioTrack.stop(); // the SDK's own auto-play would double it unprocessed
+        music2Uid = uid;
+        wireAmbient2(ru.audioTrack);
+      }
+      return;
+    }
+
     // The GM's Funk channel (own uid range, see RADIO_UID_OFFSET) — checked
     // before the music branch below, which would otherwise claim it.
     if (uid >= RADIO_UID_OFFSET) {
@@ -4344,6 +4393,7 @@ async function initAgora(appId, room, myName, asDM, token) {
 
   agoraClient.on('user-left',ru=>{
     if(ru.uid===radioUid){ unwireRadio(); radioUid=null; setRadioPlaying(false); }
+    if(ru.uid===music2Uid){ unwireAmbient2(); music2Uid=null; } // channel 2 stopped
     if(users[ru.uid]?.isDM) setRadioPlaying(false); // the GM left: no message can still be playing
     if(users[ru.uid]?.grp) scene.remove(users[ru.uid].grp);
     delete users[ru.uid];
@@ -4550,6 +4600,45 @@ async function toggleStream(){
     stat.textContent='Fehler: '+e.message;
     try{ if(musicClient) await musicClient.leave(); }catch(_){}
     musicClient=null; screenAudio=null; streaming=false;
+  }
+}
+
+// Channel 2 — a second, independent tab stream next to the first, so e.g.
+// Tabletopaudio (ambience) and Spotify (music) can run at the same time: one
+// browser tab can only be captured per stream. Deliberately a separate copy of
+// toggleStream() with its own state, so channel 1 behaves exactly as before.
+let streaming2 = false, screenAudio2 = null, musicClient2 = null;
+async function toggleStream2(){
+  const stat=document.getElementById('mstat2');
+  const btn=document.getElementById('share2-btn');
+  if(streaming2){
+    try{
+      if(screenAudio2 && musicClient2){await musicClient2.unpublish(screenAudio2);}
+      if(screenAudio2){screenAudio2.stop();screenAudio2.close();screenAudio2=null;}
+      if(musicClient2){await musicClient2.leave();musicClient2=null;}
+    }catch(e){ console.warn('stopping music stream 2 failed:', e); }
+    streaming2=false;
+    btn.textContent='🎶 Zweiten Tab streamen (Kanal 2)';
+    stat.textContent='Inaktiv'; stat.className='mstat';
+    return;
+  }
+  try{
+    stat.textContent='Browser-Tab auswählen… (einen anderen als bei Kanal 1)';
+    const tracks=await AgoraRTC.createScreenVideoTrack({encoderConfig:'1080p_1'},'enable');
+    const [sv,sa]=Array.isArray(tracks)?tracks:[tracks,null];
+    sv.stop(); sv.close();
+    if(!sa){stat.textContent='Kein Tab-Audio — "Tab-Ton teilen" im Dialog aktivieren';return;}
+    screenAudio2=sa;
+    musicClient2=AgoraRTC.createClient({mode:'rtc',codec:'vp8'});
+    await musicClient2.join(joinedAppId, joinedRoom, joinedToken, localUID + MUSIC2_UID_OFFSET);
+    await musicClient2.publish(sa);
+    streaming2=true;
+    btn.textContent='⏹ Kanal 2 stoppen';
+    stat.textContent='▶ Kanal 2 streamt für alle'; stat.className='mstat on';
+  }catch(e){
+    stat.textContent='Fehler: '+e.message;
+    try{ if(musicClient2) await musicClient2.leave(); }catch(_){}
+    musicClient2=null; screenAudio2=null; streaming2=false;
   }
 }
 
@@ -5660,7 +5749,7 @@ function renderVolPanel() {
   musicLabel.className = 'vol-label';
   const musicPct = Math.round(musicVolume * 100);
   const musicNameSpan = document.createElement('span');
-  musicNameSpan.textContent = '🎵 Musik';
+  musicNameSpan.textContent = '🎵 Musik · Kanal 1';
   const musicPctSpan = document.createElement('span');
   musicPctSpan.textContent = musicPct + '%';
   musicLabel.appendChild(musicNameSpan); musicLabel.appendChild(musicPctSpan);
@@ -5674,6 +5763,28 @@ function renderVolPanel() {
   });
   musicRow.appendChild(musicLabel); musicRow.appendChild(musicSlider);
   list.appendChild(musicRow);
+
+  // Channel 2 (the GM's second tab stream) — own volume, same layering.
+  const music2Row = document.createElement('div');
+  music2Row.className = 'vol-row';
+  const music2Label = document.createElement('div');
+  music2Label.className = 'vol-label';
+  const music2Pct = Math.round(music2Volume * 100);
+  const music2NameSpan = document.createElement('span');
+  music2NameSpan.textContent = '🎶 Musik · Kanal 2';
+  const music2PctSpan = document.createElement('span');
+  music2PctSpan.textContent = music2Pct + '%';
+  music2Label.appendChild(music2NameSpan); music2Label.appendChild(music2PctSpan);
+  const music2Slider = document.createElement('input');
+  music2Slider.type='range'; music2Slider.min='0'; music2Slider.max='200'; music2Slider.value=String(music2Pct);
+  music2Slider.addEventListener('input', ()=>{
+    music2Volume = music2Slider.value/100;
+    music2PctSpan.textContent = music2Slider.value + '%';
+    if (music2VolumeGain) music2VolumeGain.gain.value = music2Volume;
+    try{ localStorage.setItem(MUSIC2_VOLUME_KEY, String(music2Volume)); }catch(e){}
+  });
+  music2Row.appendChild(music2Label); music2Row.appendChild(music2Slider);
+  list.appendChild(music2Row);
 
   // Personal Funk volume (the GM's audio-file messages) — players only, the
   // GM never receives their own stream. Like the music row: local, saved.
@@ -5818,6 +5929,7 @@ document.getElementById('gallery-panel').addEventListener('click',e=>{
 
 document.getElementById('btn-music').addEventListener('click',toggleStream);
 document.getElementById('share-btn').addEventListener('click',toggleStream);
+document.getElementById('share2-btn').addEventListener('click',toggleStream2);
 
 // Recently-used maps/tokens, so the GM isn't re-uploading the same drone
 // token every session — Cloudinary keeps the file forever either way, this
@@ -5931,7 +6043,9 @@ document.getElementById('btn-leave').addEventListener('click',async()=>{
     if(localAudio){localAudio.stop();localAudio.close();}
     if(localVideo){localVideo.stop();localVideo.close();}
     if(screenAudio){screenAudio.stop();screenAudio.close();}
+    if(screenAudio2){screenAudio2.stop();screenAudio2.close();}
     if(musicClient) await musicClient.leave();
+    if(musicClient2) await musicClient2.leave();
     if(agoraClient) await agoraClient.leave();
   }catch(_){}
   location.reload();
