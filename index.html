@@ -147,6 +147,10 @@ body.locked #crosshair{opacity:1}
 .radio-time{display:flex;justify-content:space-between;font-size:9px;color:rgba(217,138,61,.55);margin-bottom:6px}
 .radio-btns{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:6px}
 .radio-btns .pb{margin:0;padding:7px 0;font-size:13px;letter-spacing:0}
+.elec-segs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px}
+.elec-segs .pb{margin:0;padding:7px 0;font-size:10px;letter-spacing:0}
+.elec-segs .pb.on{background:rgba(217,138,61,.25);color:#ffd9a8;border-color:rgba(217,138,61,.7)}
+.elec-row{display:flex;gap:6px}
 .radio-opt{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:1px;color:rgba(217,138,61,.7);text-transform:uppercase;margin:4px 0;cursor:pointer}
 .radio-opt input[type=range]{flex:1}
 /* Players: shown while the GM plays a Funk message */
@@ -427,6 +431,19 @@ canvas{display:block}
     <button class="pb" id="ad-trigger-btn" title="Hotkey: N">📺 Werbung jetzt zeigen</button>
     <button class="pb" id="ad-toggle-btn">🚫 Werbung stoppen</button>
     <div class="mstat">Hotkey: N · automatisch 1x/Stunde</div>
+  </div>
+  <div class="gm-sec" id="elec-sec">
+    <div class="gstt">🗳 Wahlabend (Ferro vs. Crest)</div>
+    <button class="pb" id="elec-toggle">▶ Wahl-Screen starten</button>
+    <div class="elec-segs" id="elec-segs"></div>
+    <div class="elec-row">
+      <input class="pi" id="elec-ferro" type="text" inputmode="decimal" placeholder="Ferro %" autocomplete="off"/>
+      <input class="pi" id="elec-counted" type="text" inputmode="decimal" placeholder="gezählt %" autocomplete="off"/>
+    </div>
+    <button class="pb" id="elec-set">Zahlen setzen</button>
+    <input class="pi" id="elec-news" type="text" maxlength="110" placeholder="Eilmeldung fürs Laufband …" autocomplete="off"/>
+    <button class="pb" id="elec-news-btn">📰 Eilmeldung senden / leeren</button>
+    <div class="mstat" id="elec-status">—</div>
   </div>
   <div class="gm-sec" id="radio-sec">
     <div class="gstt">📻 Funk (Audiodateien)</div>
@@ -1268,6 +1285,16 @@ const NEWS_HEADLINES = [
 let newsTickerCanvas, newsTickerCtx, newsTickerTexture;
 let newsTickerOffset = 0, newsTickerFullText = '', newsTickerPeriod = 0;
 const NEWS_TICKER_SPEED = 140; // canvas px/sec
+// (Re)sets what the ticker scrolls — the flavor list above, or the election
+// headlines while Wahlabend mode is on (see electionTickerList).
+function setTickerHeadlines(list) {
+  if (!newsTickerCtx) return;
+  newsTickerCtx.font = `${Math.round(newsTickerCanvas.height*0.5)}px 'Share Tech Mono', monospace`;
+  newsTickerFullText = list.join('     //     ');
+  const textWidth = newsTickerCtx.measureText(newsTickerFullText).width;
+  newsTickerPeriod = textWidth + textWidth*0.15; // trailing gap before the loop repeats
+  newsTickerOffset = 0;
+}
 function buildNewsTicker() {
   const w = octWallDefs()[0]; // same north wall as the map screen above it
   const TW = MAP_SCREEN_W, TH = 0.22, ty = 0.5;
@@ -1277,11 +1304,8 @@ function buildNewsTicker() {
   newsTickerCanvas = document.createElement('canvas');
   newsTickerCanvas.width = 1600; newsTickerCanvas.height = Math.round(1600*(TH/TW));
   newsTickerCtx = newsTickerCanvas.getContext('2d');
-  newsTickerCtx.font = `${Math.round(newsTickerCanvas.height*0.5)}px 'Share Tech Mono', monospace`;
-  newsTickerFullText = NEWS_HEADLINES.join('     //     ');
-  const textWidth = newsTickerCtx.measureText(newsTickerFullText).width;
-  newsTickerPeriod = textWidth + textWidth*0.15; // trailing gap before the loop repeats
   newsTickerTexture = new THREE.CanvasTexture(newsTickerCanvas);
+  setTickerHeadlines(electionTickerList());
 
   const offset = new THREE.Vector3(0,0,0.03).applyEuler(new THREE.Euler(0,w.ry,0));
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(TW,TH),
@@ -2892,6 +2916,7 @@ function updateBillboard(dt) {
   const now = sharedNow()/1000;
   const slot = Math.floor(now/BILLBOARD_SLOT_S), t = now - slot*BILLBOARD_SLOT_S;
   if (isDM && slot !== lastBillboardBroadcastSlot && agoraClient) { lastBillboardBroadcastSlot = slot; broadcastBillboard(slot); }
+  if (election.active) { drawElection(dt); return; } // Wahlabend: results screen instead of ads (the ad schedule above keeps running underneath)
   const useOverride = billboardOverride && billboardOverride.slot === slot;
   const cur = useOverride ? billboardOverride.cur : billboardPick(slot);
   const next = useOverride ? billboardOverride.next : billboardPick(slot+1);
@@ -2915,6 +2940,207 @@ function updateBillboard(dt) {
   billboardTexture.needsUpdate = true;
 }
 let billboardDrawKey = null;
+
+// ══════════ WAHLABEND (election mode) ══════════
+// GM-driven visual takeover for an election-night scene (Mission 1.5, Ferro vs.
+// Crest): the billboard becomes an N54 results screen and the news ticker
+// switches to election headlines. Ambience stays with the audio channels.
+// The six segments are the runbook's Hochrechnungs-Uhr; the GM can also type
+// any numbers or a breaking-news line. The state is tiny, so it is re-sent
+// whole on every change and on every resync (dmResyncRoom) — a latecomer or
+// reconnecter can't miss it, and re-applying an unchanged state is a no-op.
+const ELECTION_SEGMENTS = [
+  { time:'20:00', ferro:null, crest:null, counted:0, banner:'WAHLLOKALE GESCHLOSSEN', news:[
+    'WAHLLOKALE GESCHLOSSEN – ERSTE ZAHLEN UM 20:40',
+    'FERRO GEGEN CREST: KOPF-AN-KOPF-RENNEN UM DAS BÜRGERMEISTERAMT',
+    'WAHLBETEILIGUNG SO HOCH WIE SEIT 2069 NICHT' ] },
+  { time:'20:40', ferro:51.2, counted:22, banner:'', news:[
+    '2. HOCHRECHNUNG: FERRO 51,2 – CREST 48,8',
+    'FERRO VORN, ABER ERST EIN FÜNFTEL DER STIMMEN GEZÄHLT',
+    'NOCH AUSSTEHEND: HEYWOOD UND SANTO DOMINGO' ] },
+  { time:'21:20', ferro:50.4, counted:41, banner:'', news:[
+    '3. HOCHRECHNUNG: FERRO 50,4 – CREST 49,6 – DAS RENNEN WIRD ENGER',
+    'CREST-ZENTRALE: DIE BAR WIRD VOLLER',
+    'WAHLBETEILIGUNG IN CORPO PLAZA ÜBER DEM STADTSCHNITT' ] },
+  { time:'22:00', ferro:49.8, counted:63, banner:'', news:[
+    '4. HOCHRECHNUNG: CREST 50,2 – FERRO 49,8 – CREST ÜBERHOLT',
+    'HEYWOOD UND SANTO DOMINGO MELDEN: FERRO UNTER DEN ERWARTUNGEN',
+    'CREST-LAGER JUBELT – FERRO-LAGER SCHWEIGT' ] },
+  { time:'22:40', ferro:49.0, counted:84, banner:'', news:[
+    '5. HOCHRECHNUNG: CREST 51,0 – FERRO 49,0',
+    'ENDERGEBNIS BIS 23:20 ERWARTET',
+    'CREST-SIEGESREDE IN VORBEREITUNG' ] },
+  { time:'23:20', ferro:48.6, counted:100, banner:'N54 ERKLÄRT DAMON CREST ZUM SIEGER', news:[
+    'N54 ERKLÄRT DAMON CREST ZUM SIEGER – 51,4 ZU 48,6 PROZENT',
+    'CREST HÄLT SEINE SIEGESREDE IN KÜRZE',
+    'FERRO-LAGER ÄUSSERT SICH NICHT ZUM ERGEBNIS' ] },
+];
+const ELECTION_FERRO_C = '#ffb13d', ELECTION_CREST_C = '#2fd8e8';
+// Crest's share is always 100 - Ferro's. ferro === null = no numbers yet.
+const election = { active:false, seg:0, ferro:null, counted:0, banner:ELECTION_SEGMENTS[0].banner, custom:'' };
+const electionShown = { ferro:50, counted:0 }; // what is drawn right now: eases towards the real numbers
+const electionClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+function electionTickerList() {
+  if (!election.active) return NEWS_HEADLINES;
+  const list = ELECTION_SEGMENTS[election.seg].news.slice();
+  if (election.custom) list.unshift('+++ EILMELDUNG: '+election.custom+' +++');
+  return list;
+}
+
+// Takes a (possibly foreign) state, validates it, makes it the local one.
+function electionApply(n) {
+  const before = election.active+'|'+election.seg+'|'+election.custom;
+  const wasActive = election.active;
+  election.active = !!n.active;
+  election.seg = Number.isInteger(n.seg) ? electionClamp(n.seg, 0, ELECTION_SEGMENTS.length-1) : 0;
+  election.ferro = Number.isFinite(n.ferro) ? electionClamp(n.ferro, 0, 100) : null;
+  election.counted = Number.isFinite(n.counted) ? electionClamp(n.counted, 0, 100) : 0;
+  election.banner = typeof n.banner === 'string' ? n.banner.slice(0, 60) : '';
+  election.custom = typeof n.custom === 'string' ? n.custom.slice(0, 110) : '';
+  if (election.active && !wasActive) { electionShown.ferro = 50; electionShown.counted = 0; } // bars sweep in
+  if (before !== election.active+'|'+election.seg+'|'+election.custom) setTickerHeadlines(electionTickerList());
+}
+
+function electionBroadcast() { // GM only
+  if (!isDM || !agoraClient) return;
+  agoraClient.sendStreamMessage(new TextEncoder().encode(JSON.stringify({type:'election', ...election})), true)
+    .catch(e => console.warn('Wahl-Broadcast fehlgeschlagen:', e));
+}
+function electionGM(patch) { // GM: change, show locally, tell everyone
+  electionApply({...election, ...patch});
+  electionBroadcast();
+  electionUI();
+}
+function electionGoSeg(i) {
+  const s = ELECTION_SEGMENTS[i];
+  electionGM({active:true, seg:i, ferro:s.ferro, counted:s.counted, banner:s.banner});
+}
+
+// Fits `text` into maxW by shrinking the font if needed (leaves ctx.font set).
+function electionFont(ctx, text, weight, family, px, maxW) {
+  ctx.font = `${weight} ${px}px ${family}`;
+  const w = ctx.measureText(text).width;
+  if (w > maxW) ctx.font = `${weight} ${Math.floor(px*maxW/w)}px ${family}`;
+}
+
+function drawElection(dt) {
+  const T = election, S = electionShown, seg = ELECTION_SEGMENTS[T.seg];
+  const hasNums = T.ferro !== null, target = hasNums ? T.ferro : 50;
+  const k = 1 - Math.exp(-(dt||0)*2.2);
+  S.ferro += (target - S.ferro)*k;      if (Math.abs(target - S.ferro) < 0.005) S.ferro = target;
+  S.counted += (T.counted - S.counted)*k; if (Math.abs(T.counted - S.counted) < 0.05) S.counted = T.counted;
+  const blink = Math.floor(sharedNow()/1000) % 2;
+  // like the ads: only redraw + re-upload when the picture changes (the key can
+  // never equal an ad key, so switching back to ads always repaints)
+  const key = 'E|'+S.ferro.toFixed(2)+'|'+S.counted.toFixed(1)+'|'+T.seg+'|'+hasNums+'|'+T.banner+'|'+blink;
+  if (key === billboardDrawKey) return;
+  billboardDrawKey = key;
+
+  const ctx = billboardCtx, W = billboardCanvas.width, H = billboardCanvas.height;
+  const OR = "'Orbitron', sans-serif", MO = "'Share Tech Mono', monospace";
+  const f = S.ferro, c = 100 - f, lead = hasNums && Math.abs(f - c) >= 0.05 ? (f > c ? 'F' : 'C') : null;
+  const fmt = v => v.toFixed(1).replace('.', ',');
+  ctx.fillStyle = '#04070a'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,0.025)'; for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
+  ctx.strokeStyle = 'rgba(47,216,232,0.3)'; ctx.lineWidth = 3; ctx.strokeRect(2, 2, W-4, H-4);
+  ctx.textBaseline = 'middle';
+
+  // header: channel + title left, LIVE + clock right
+  ctx.textAlign = 'left';
+  ctx.font = `900 ${H*0.075}px ${OR}`; ctx.fillStyle = '#2fd8e8'; ctx.fillText('N54', W*0.04, H*0.085);
+  const n54w = ctx.measureText('N54').width;
+  ctx.font = `700 ${H*0.045}px ${OR}`; ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillText('WAHLNACHT · NIGHT CITY', W*0.04 + n54w + W*0.02, H*0.088);
+  ctx.textAlign = 'right';
+  ctx.font = `700 ${H*0.075}px ${MO}`; ctx.fillStyle = '#ffffff'; ctx.fillText(seg.time, W*0.96, H*0.085);
+  const tw = ctx.measureText(seg.time).width;
+  ctx.font = `700 ${H*0.045}px ${OR}`; ctx.fillStyle = blink ? '#ff3b4e' : 'rgba(255,59,78,0.35)';
+  ctx.fillText('● LIVE', W*0.96 - tw - W*0.025, H*0.088);
+  ctx.fillStyle = 'rgba(47,216,232,0.35)'; ctx.fillRect(W*0.04, H*0.165, W*0.92, 2);
+
+  // the two candidates
+  const cols = [
+    { x:W*0.25, name:'LUCÍA FERRO', col:ELECTION_FERRO_C, v:f, me:'F' },
+    { x:W*0.75, name:'DAMON CREST', col:ELECTION_CREST_C, v:c, me:'C' },
+  ];
+  cols.forEach(o => {
+    const dim = lead && lead !== o.me;
+    ctx.textAlign = 'center'; ctx.fillStyle = o.col; ctx.globalAlpha = dim ? 0.6 : 1;
+    ctx.font = `700 ${H*0.055}px ${OR}`; ctx.fillText(o.name, o.x, H*0.255);
+    const txt = hasNums ? fmt(o.v)+'%' : '–,–%';
+    electionFont(ctx, txt, 900, OR, H*0.21, W*0.43);
+    if (!hasNums) ctx.globalAlpha = 0.3;
+    if (lead === o.me) { ctx.shadowColor = o.col; ctx.shadowBlur = H*0.06; }
+    ctx.fillText(txt, o.x, H*0.43);
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+  });
+
+  // tug-of-war bar — stretched (±1 point = 5% of the width) so a 0.4 lead is still visible
+  const bx0 = W*0.05, bx1 = W*0.95, by = H*0.62, bh = H*0.09, bw = bx1 - bx0;
+  const p = hasNums ? electionClamp(0.5 + (f - 50)*0.05, 0.08, 0.92) : 0.5, sx = bx0 + bw*p;
+  ctx.fillStyle = hasNums ? ELECTION_FERRO_C : 'rgba(255,255,255,0.14)'; ctx.fillRect(bx0, by, sx - bx0, bh);
+  ctx.fillStyle = hasNums ? ELECTION_CREST_C : 'rgba(255,255,255,0.14)'; ctx.fillRect(sx, by, bx1 - sx, bh);
+  ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(sx - 2, by - H*0.02, 4, bh + H*0.04);
+  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillRect(bx0 + bw/2 - 1, by + bh, 2, H*0.025); // 50 % mark
+
+  // lead line, or the banner band when the segment has one
+  if (T.banner) {
+    const bc = lead ? (lead === 'F' ? ELECTION_FERRO_C : ELECTION_CREST_C) : '#ffffff';
+    ctx.globalAlpha = 0.16; ctx.fillStyle = bc; ctx.fillRect(W*0.04, H*0.765, W*0.92, H*0.135); ctx.globalAlpha = 1;
+    ctx.strokeStyle = bc; ctx.lineWidth = 2; ctx.strokeRect(W*0.04, H*0.765, W*0.92, H*0.135);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff';
+    electionFont(ctx, T.banner, 900, OR, H*0.075, W*0.88);
+    ctx.fillText(T.banner, W/2, H*0.833);
+  } else if (hasNums) {
+    ctx.textAlign = 'center';
+    const txt = lead ? (lead === 'F' ? 'FERRO FÜHRT +' : 'CREST FÜHRT +')+fmt(Math.abs(f - c)) : 'GLEICHSTAND';
+    ctx.fillStyle = lead === 'F' ? ELECTION_FERRO_C : lead === 'C' ? ELECTION_CREST_C : '#ffffff';
+    ctx.font = `700 ${H*0.06}px ${OR}`; ctx.fillText(txt, W/2, H*0.82);
+  }
+
+  // footer: counted progress + Hochrechnung number
+  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(W*0.04, H*0.925, W*0.92, H*0.012);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.fillRect(W*0.04, H*0.925, W*0.92*S.counted/100, H*0.012);
+  ctx.font = `700 ${H*0.04}px ${MO}`; ctx.fillStyle = 'rgba(255,255,255,0.65)';
+  ctx.textAlign = 'left';  ctx.fillText(Math.round(S.counted)+' % AUSGEZÄHLT', W*0.04, H*0.965);
+  ctx.textAlign = 'right'; ctx.fillText('HOCHRECHNUNG '+(T.seg+1)+'/'+ELECTION_SEGMENTS.length, W*0.96, H*0.965);
+  billboardTexture.needsUpdate = true;
+}
+
+// ── GM controls ──
+function electionUI() {
+  const el = id => document.getElementById(id);
+  el('elec-toggle').textContent = election.active ? '⏹ Wahl-Screen beenden' : '▶ Wahl-Screen starten';
+  [...el('elec-segs').children].forEach((b, i) => b.classList.toggle('on', election.active && i === election.seg));
+  const fmt = v => v.toFixed(1).replace('.', ',');
+  el('elec-status').textContent = !election.active ? 'Aus — die Plakatwand zeigt wieder Werbung'
+    : 'LIVE · Hochrechnung '+(election.seg+1)+'/'+ELECTION_SEGMENTS.length+' · '
+      + (election.ferro === null ? 'noch keine Zahlen' : 'Ferro '+fmt(election.ferro)+' / Crest '+fmt(100 - election.ferro))
+      + ' · '+Math.round(election.counted)+' % gezählt';
+}
+function electionSetupUI() {
+  const el = id => document.getElementById(id);
+  ELECTION_SEGMENTS.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.className = 'pb'; b.textContent = (i+1)+' · '+s.time;
+    b.title = s.banner || (s.ferro === null ? '' : 'Ferro '+s.ferro.toFixed(1)+' / Crest '+(100 - s.ferro).toFixed(1));
+    b.addEventListener('click', () => electionGoSeg(i));
+    el('elec-segs').appendChild(b);
+  });
+  el('elec-toggle').addEventListener('click', () => election.active ? electionGM({active:false}) : electionGM({active:true}));
+  el('elec-set').addEventListener('click', () => {
+    const fe = parseFloat(String(el('elec-ferro').value).replace(',', '.'));
+    const co = parseFloat(String(el('elec-counted').value).replace(',', '.'));
+    if (!Number.isFinite(fe)) { el('elec-status').textContent = 'Bitte Ferro-Prozent eintragen (z. B. 49,8)'; return; }
+    electionGM({active:true, ferro:electionClamp(fe, 0, 100), counted:Number.isFinite(co) ? co : election.counted, banner:''});
+  });
+  const sendNews = () => { electionGM({custom:el('elec-news').value.trim().toUpperCase()}); };
+  el('elec-news-btn').addEventListener('click', sendNews);
+  el('elec-news').addEventListener('keydown', e => { if (e.key === 'Enter') sendNews(); });
+  electionUI();
+}
+electionSetupUI();
 
 // Runner ID-badge frames — chrome/neon-edge holo-frames on the four
 // chamfer walls (NE/SE/SW/NW), one per player slot. Load from portraits/ so
@@ -4181,6 +4407,7 @@ function dmResyncRoom() {
   if (forceMuteHeartbeat) sendForceMute(); // a latecomer/reconnecter must not miss a running mute-all
   broadcastBillboard(Math.floor(sharedNow()/1000/BILLBOARD_SLOT_S)); // ...nor start on a different billboard ad than everyone else
   if (radio.audio && !radio.audio.paused) radioSendState(); // ...nor miss that a Funk message is playing (music ducking + badge)
+  electionBroadcast(); // ...nor the election-night screen (or its being switched off)
 }
 
 // ══════════ NETWORK RESILIENCE ══════════
@@ -4504,6 +4731,9 @@ async function initAgora(appId, room, myName, asDM, token) {
          && (!msg.next || (AD_PATH_RE.test(msg.next) && !String(msg.next).includes('..')))){
         billboardOverride = {slot:msg.slot, cur:msg.cur, next:msg.next||msg.cur};
         sharedClockOffsetMs = msg.now - Date.now(); // adopt the GM's clock for the billboard schedule
+      }
+      if(msg.type==='election' && !isDM && (users[uid]?.isDM || pendingName[uid]?.isDM)){
+        electionApply(msg); // Wahlabend: results screen on the billboard + election ticker
       }
       if(msg.type==='radio' && !isDM && (users[uid]?.isDM || pendingName[uid]?.isDM)){
         setRadioPlaying(!!msg.playing); // the GM started/stopped a Funk message
